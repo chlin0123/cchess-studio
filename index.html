@@ -95,7 +95,7 @@
     <div class="move-list" id="moveList"></div>
     <div class="comment-box">
       <label style="font-size:0.85rem;color:#c2b5a8;">當前步數講解 / 註解（自動隨存檔保存）：</label>
-      <textarea id="commentInput" placeholder="在此輸入本步棋評或心得..." oninput="saveComment()"></textarea>
+      <textarea id="commentInput" maxlength="2000" placeholder="在此輸入本步棋評或心得..." oninput="saveComment()"></textarea>
     </div>
   </div>
 </main>
@@ -689,15 +689,14 @@ function goStep(s) {
 }
 function undoMove() { if (curStep > 0) goStep(curStep - 1); }
 function flipBoard() { flipped = !flipped; drawBoard(); }
-function saveComment() { history[curStep].comment = document.getElementById('commentInput').value; }
+function saveComment() { history[curStep].comment = document.getElementById('commentInput').value.slice(0, 2000); }
 
 document.getElementById('presetSelect').addEventListener('change', e => {
   const key = e.target.value;
-  if (!key || !PRESETS[key]) return;
-  resetGame();
-  history[0].comment = PRESETS[key].title;
-  PRESETS[key].moves.forEach(m => makeMove(m.f[0], m.f[1], m.t[0], m.t[1], m.c));
-  goStep(0);
+  if (!key || !Object.prototype.hasOwnProperty.call(PRESETS, key)) return;
+  if (loadAndVerifySteps(PRESETS[key].title, PRESETS[key].moves)) {
+    goStep(0);
+  }
 });
 
 function isValidCoordPair(pair) {
@@ -762,7 +761,12 @@ function saveCurrentRecord() {
     updatedAt: new Date().toISOString(),
     steps: history.slice(1).map(h => ({ f: [h.lastMove.fr, h.lastMove.fc], t: [h.lastMove.tr, h.lastMove.tc], c: h.comment }))
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  } catch (err) {
+    alert('瀏覽器儲存空間不足，無法儲存棋譜！');
+    return;
+  }
   history[0].comment = title;
   refreshSavedSelect(title);
   renderAll();
@@ -783,12 +787,12 @@ function loadAndVerifySteps(title, steps) {
   const prevStep = curStep;
   resetGame();
   if (typeof title === 'string' && title.trim()) {
-    history[0].comment = title.trim().slice(0, 120);
+    history[0].comment = title.trim().slice(0, 60);
   }
 
   for (let i = 0; i < steps.length; i++) {
     const m = steps[i];
-    if (!m || !isValidCoordPair(m.f) || !isValidCoordPair(m.t)) {
+    if (!m || typeof m !== 'object' || !isValidCoordPair(m.f) || !isValidCoordPair(m.t)) {
       history = prevHistory;
       curStep = prevStep;
       renderAll();
@@ -798,6 +802,13 @@ function loadAndVerifySteps(title, steps) {
     const [fr, fc] = m.f;
     const [tr, tc] = m.t;
     const cur = history[curStep];
+    if (evaluateGameState(cur.board, cur.turn).over) {
+      history = prevHistory;
+      curStep = prevStep;
+      renderAll();
+      alert(`載入失敗：第 ${i + 1} 步前牌局已終局，不可繼續行棋！`);
+      return false;
+    }
     const piece = cur.board[fr][fc];
     if (!piece || piece.s !== cur.turn) {
       history = prevHistory;
@@ -814,7 +825,7 @@ function loadAndVerifySteps(title, steps) {
       alert(`載入失敗：第 ${i + 1} 步違反象棋規則或導致將帥受威脅！`);
       return false;
     }
-    const comment = typeof m.c === 'string' ? m.c : '';
+    const comment = typeof m.c === 'string' ? m.c.slice(0, 2000) : '';
     makeMove(fr, fc, tr, tc, comment);
   }
   return true;
@@ -837,7 +848,12 @@ function deleteSavedRecord() {
   if (!confirm(`確定要刪除存檔棋譜「${title}」嗎？`)) return;
   const records = getSavedRecords();
   delete records[title];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  } catch (err) {
+    alert('更新存檔庫失敗！');
+    return;
+  }
   refreshSavedSelect();
 }
 
@@ -853,7 +869,11 @@ function closeModal() { document.getElementById('ioModal').classList.remove('ope
 function copyIO() {
   const ta = document.getElementById('ioTextarea');
   ta.select();
-  navigator.clipboard.writeText(ta.value);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(ta.value).catch(() => document.execCommand('copy'));
+  } else {
+    document.execCommand('copy');
+  }
 }
 function importJSON() {
   let data;
