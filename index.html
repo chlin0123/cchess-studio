@@ -26,9 +26,14 @@
   main { display: flex; flex: 1; padding: 16px; gap: 20px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
   .board-wrap { position: relative; background: var(--wood); padding: 14px; border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,0.6), inset 0 0 18px rgba(100,50,10,0.35); border: 4px solid #784719; }
   canvas { display: block; cursor: pointer; }
-  .side-panel { width: 380px; background: var(--panel); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 11px; border: 1px solid #3f362f; max-height: 690px; }
+  .side-panel { width: 390px; background: var(--panel); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px; border: 1px solid #3f362f; max-height: 740px; }
   .status-bar { background: #1a1613; padding: 10px 12px; border-radius: 6px; font-weight: bold; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #f59e0b; }
   .status-bar.gameover { border-left-color: #ef4444; background: #2d1616; color: #fca5a5; }
+  .status-bar.thinking { border-left-color: #38bdf8; background: #13222e; color: #bae6fd; }
+  .ai-bar { display: flex; gap: 6px; align-items: center; background: #1c1815; padding: 8px; border-radius: 6px; border: 1px solid #38302a; }
+  .ai-bar select { flex: 1; min-width: 0; padding: 5px 8px; font-size: 0.84rem; }
+  .ai-bar button { padding: 5px 10px; font-size: 0.84rem; background: #0f5257; border-color: #0e7490; color: #e0f2fe; white-space: nowrap; }
+  .ai-bar button:hover { background: #0e7490; border-color: #38bdf8; }
   .save-bar { display: flex; gap: 6px; align-items: center; background: #1e1a16; padding: 8px; border-radius: 6px; border: 1px solid #38302a; }
   .save-bar select { flex: 1; min-width: 0; }
   .move-list { flex: 1; height: 270px; overflow-y: auto; background: #181512; border-radius: 6px; padding: 8px; border: 1px solid #38302a; display: grid; grid-template-columns: 44px 1fr 1fr; gap: 4px; align-content: start; font-size: 0.92rem; }
@@ -79,6 +84,21 @@
       <span id="stepCount">第 0 步</span>
     </div>
 
+    <div class="ai-bar">
+      <select id="aiModeSelect" onchange="onAiConfigChange()" title="選擇對弈模式">
+        <option value="off">對弈：雙人打譜 (AI 關)</option>
+        <option value="B">對弈：電腦執黑 (玩家紅)</option>
+        <option value="R">對弈：電腦執紅 (玩家黑)</option>
+      </select>
+      <select id="aiLevelSelect" onchange="onAiConfigChange()" title="選擇 AI 難度等級">
+        <option value="1">AI：新手 (入門)</option>
+        <option value="2">AI：業餘 (初級)</option>
+        <option value="3" selected>AI：好手 (中級)</option>
+        <option value="4">AI：大師 (高級)</option>
+      </select>
+      <button id="aiHintBtn" onclick="requestAiHint()" title="請 AI 分析當前盤面並推薦最佳著法（再點一次可直接代走）">AI 支招</button>
+    </div>
+
     <div class="save-bar">
       <select id="savedSelect" onchange="loadSavedRecord()">
         <option value="">-- 我的存檔棋譜庫 (0) --</option>
@@ -126,6 +146,11 @@ let selected = null;
 let validMoves = [];
 let history = [];
 let curStep = 0;
+let aiMode = 'off';
+let aiLevel = 3;
+let aiThinking = false;
+let aiSessionId = 0;
+let hintMove = null;
 
 const PIECE_NAMES = {
   R: { K:'帥', A:'仕', B:'相', N:'傌', R:'俥', C:'炮', P:'兵' },
@@ -478,12 +503,16 @@ function validateAllPresets() {
   badge.textContent = `9局 / ${totalSteps}步 規則檢驗通過`;
 }
 
-function resetGame() {
+function resetGame(skipAiTrigger = false) {
+  aiSessionId++;
+  aiThinking = false;
+  hintMove = null;
   history = [{ board: initBoard(), turn: 'R', notation: '開局', comment: '初始盤面，紅方先行。', lastMove: null }];
   curStep = 0;
   selected = null;
   validMoves = [];
   renderAll();
+  if (!skipAiTrigger) maybeTriggerAi();
 }
 
 function getNotation(board, fr, fc, tr, tc) {
@@ -501,7 +530,7 @@ function getNotation(board, fr, fc, tr, tc) {
   return `${name}${numFmt[fileFrom]}${dir}${target}`;
 }
 
-function makeMove(fr, fc, tr, tc, comment = "") {
+function makeMove(fr, fc, tr, tc, comment = "", skipAiTrigger = false) {
   const cur = history[curStep];
   const nextB = cloneBoard(cur.board);
   const notation = getNotation(cur.board, fr, fc, tr, tc);
@@ -518,7 +547,9 @@ function makeMove(fr, fc, tr, tc, comment = "") {
   curStep++;
   selected = null;
   validMoves = [];
+  hintMove = null;
   renderAll();
+  if (!skipAiTrigger) maybeTriggerAi();
 }
 
 function b2s(r, c) {
@@ -574,6 +605,22 @@ function drawBoard() {
     });
   }
 
+  if (hintMove) {
+    const [fx, fy] = b2s(hintMove.fr, hintMove.fc);
+    const [tx, ty] = b2s(hintMove.tr, hintMove.tc);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.95)';
+    ctx.lineWidth = 3.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(fx - 26, fy - 26, 52, 52);
+    ctx.strokeRect(tx - 26, ty - 26, 52, 52);
+    ctx.beginPath();
+    ctx.moveTo(fx, fy);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   validMoves.forEach(([r, c]) => {
     const [x, y] = b2s(r, c);
     ctx.fillStyle = 'rgba(22, 163, 74, 0.8)';
@@ -615,11 +662,22 @@ function renderAll() {
   const turnText = document.getElementById('turnText');
 
   if (state.over) {
+    statusBar.classList.remove('thinking');
     statusBar.classList.add('gameover');
     turnText.textContent = `終局：${state.reason}`;
-  } else {
+  } else if (aiThinking) {
     statusBar.classList.remove('gameover');
-    turnText.textContent = (cur.turn === 'R' ? '紅方行棋' : '黑方行棋') + (state.inCheck ? ' (將軍!)' : '');
+    statusBar.classList.add('thinking');
+    const lvNames = {1:'新手', 2:'業餘', 3:'好手', 4:'大師'};
+    turnText.textContent = `🤖 AI (${lvNames[aiLevel] || '好手'}) 思考中...`;
+  } else {
+    statusBar.classList.remove('gameover', 'thinking');
+    if (hintMove) {
+      turnText.textContent = `💡 AI 建議：${hintMove.notation} (再按支招代走)`;
+    } else {
+      const roleTag = (aiMode === cur.turn) ? ' (AI)' : '';
+      turnText.textContent = (cur.turn === 'R' ? '紅方行棋' : '黑方行棋') + roleTag + (state.inCheck ? ' (將軍!)' : '');
+    }
   }
 
   document.getElementById('stepCount').textContent = `第 ${curStep} / ${history.length - 1} 步`;
@@ -651,7 +709,9 @@ function renderAll() {
 }
 
 canvas.addEventListener('click', e => {
+  if (aiThinking) return;
   const cur = history[curStep];
+  if (aiMode === cur.turn) return;
   const state = evaluateGameState(cur.board, cur.turn);
   if (state.over) return;
 
@@ -682,14 +742,364 @@ canvas.addEventListener('click', e => {
 
 function goStep(s) {
   if (s < 0 || s >= history.length) return;
+  aiSessionId++;
+  aiThinking = false;
+  hintMove = null;
   curStep = s;
   selected = null;
   validMoves = [];
   renderAll();
 }
-function undoMove() { if (curStep > 0) goStep(curStep - 1); }
+function undoMove() {
+  if (curStep <= 0) return;
+  aiSessionId++;
+  aiThinking = false;
+  hintMove = null;
+  const cur = history[curStep];
+  if (aiMode !== 'off' && cur.turn !== aiMode && curStep >= 2) {
+    goStep(curStep - 2);
+  } else {
+    goStep(curStep - 1);
+  }
+}
 function flipBoard() { flipped = !flipped; drawBoard(); }
 function saveComment() { history[curStep].comment = document.getElementById('commentInput').value.slice(0, 2000); }
+
+const PIECE_VAL = { K: 10000, R: 900, C: 450, N: 400, B: 200, A: 200, P: 100 };
+const PST_P = [
+  [ 40,  60,  80, 110, 120, 110,  80,  60,  40],
+  [ 90, 130, 170, 230, 250, 230, 170, 130,  90],
+  [100, 140, 180, 220, 240, 220, 180, 140, 100],
+  [ 90, 120, 150, 180, 190, 180, 150, 120,  90],
+  [ 70,  90, 110, 130, 140, 130, 110,  90,  70],
+  [ 10,   0,  20,   0,  25,   0,  20,   0,  10],
+  [  0,   0,   0,   0,   5,   0,   0,   0,   0],
+  [  0,   0,   0,   0,   0,   0,   0,   0,   0],
+  [  0,   0,   0,   0,   0,   0,   0,   0,   0],
+  [  0,   0,   0,   0,   0,   0,   0,   0,   0]
+];
+const PST_N = [
+  [-20, -10,   0,   5,   5,   5,   0, -10, -20],
+  [-10,  15,  55,  45,  30,  45,  55,  15, -10],
+  [  0,  25,  45,  65,  55,  65,  45,  25,   0],
+  [  5,  25,  40,  50,  45,  50,  40,  25,   5],
+  [  5,  20,  35,  45,  40,  45,  35,  20,   5],
+  [  0,  15,  30,  35,  35,  35,  30,  15,   0],
+  [ -5,  10,  20,  25,  20,  25,  20,  10,  -5],
+  [-10,   5,  25,  15,  10,  15,  25,   5, -10],
+  [-15, -10,   0,   5,  -5,   5,   0, -10, -15],
+  [-30, -20, -15, -15, -15, -15, -15, -20, -30]
+];
+const PST_R = [
+  [ 30,  45,  40,  55,  50,  55,  40,  45,  30],
+  [ 35,  55,  50,  65,  60,  65,  50,  55,  35],
+  [ 25,  40,  35,  50,  45,  50,  35,  40,  25],
+  [ 30,  45,  40,  55,  50,  55,  40,  45,  30],
+  [ 25,  35,  35,  45,  40,  45,  35,  35,  25],
+  [ 20,  30,  30,  40,  35,  40,  30,  30,  20],
+  [ 10,  20,  20,  30,  25,  30,  20,  20,  10],
+  [ 10,  20,  15,  30,  25,  30,  15,  20,  10],
+  [  5,  20,  15,  25,  15,  25,  15,  20,   5],
+  [-25,  15,   5,  20,  10,  20,   5,  15, -25]
+];
+const PST_C = [
+  [ 30,  30,  25,  35,  45,  35,  25,  30,  30],
+  [ 15,  20,  20,  25,  35,  25,  20,  20,  15],
+  [ 15,  20,  25,  30,  45,  30,  25,  20,  15],
+  [ 10,  15,  20,  25,  40,  25,  20,  15,  10],
+  [ 10,  15,  20,  25,  35,  25,  20,  15,  10],
+  [ 10,  15,  20,  25,  35,  25,  20,  15,  10],
+  [  5,  10,  15,  20,  35,  20,  15,  10,   5],
+  [ 15,  20,  15,  25,  45,  25,  15,  20,  15],
+  [  5,  10,   5,  10,  15,  10,   5,  10,   5],
+  [  0,   5,   5,  10,  15,  10,   5,   5,   0]
+];
+
+function getPstBonus(p, r, c) {
+  const rr = p.s === 'R' ? r : 9 - r;
+  const cc = p.s === 'R' ? c : 8 - c;
+  if (p.t === 'P') return PST_P[rr][cc];
+  if (p.t === 'N') return PST_N[rr][cc];
+  if (p.t === 'R') return PST_R[rr][cc];
+  if (p.t === 'C') return PST_C[rr][cc];
+  if (p.t === 'A') return (rr === 8 && cc === 4) ? 25 : 5;
+  if (p.t === 'B') return (rr === 7 && cc === 4) ? 25 : 5;
+  if (p.t === 'K') return (rr === 9 && cc === 4) ? 20 : 0;
+  return 0;
+}
+
+function evaluateBoard(board, usePst = true) {
+  let score = 0;
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 9; c++) {
+      const p = board[r][c];
+      if (!p) continue;
+      let val = PIECE_VAL[p.t] || 0;
+      if (usePst) val += getPstBonus(p, r, c);
+      score += (p.s === 'R') ? val : -val;
+    }
+  }
+  return score;
+}
+
+function getAllLegalMoves(board, side, capturesOnly = false) {
+  const moves = [];
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 9; c++) {
+      const p = board[r][c];
+      if (!p || p.s !== side) continue;
+      const pseudo = getPseudoMoves(board, r, c);
+      for (let i = 0; i < pseudo.length; i++) {
+        const [tr, tc] = pseudo[i];
+        const target = board[tr][tc];
+        if (capturesOnly && !target) continue;
+        board[tr][tc] = p;
+        board[r][c] = null;
+        const safe = !isInCheck(board, side);
+        board[r][c] = p;
+        board[tr][tc] = target;
+        if (safe) {
+          let orderScore = 0;
+          if (target) orderScore += 5000 + PIECE_VAL[target.t] * 10 - PIECE_VAL[p.t];
+          orderScore += getPstBonus(p, tr, tc) - getPstBonus(p, r, c);
+          moves.push({ fr: r, fc: c, tr, tc, orderScore });
+        }
+      }
+    }
+  }
+  moves.sort((a, b) => b.orderScore - a.orderScore);
+  return moves;
+}
+
+function quiesce(board, alpha, beta, turn, qDepth, deadline) {
+  const standPat = evaluateBoard(board, true) * (turn === 'R' ? 1 : -1);
+  if (standPat >= beta) return beta;
+  if (standPat > alpha) alpha = standPat;
+  if (qDepth <= 0 || performance.now() > deadline) return standPat;
+
+  const captures = getAllLegalMoves(board, turn, true);
+  const nextTurn = turn === 'R' ? 'B' : 'R';
+  for (let i = 0; i < captures.length; i++) {
+    const m = captures[i];
+    const mover = board[m.fr][m.fc];
+    const captured = board[m.tr][m.tc];
+    board[m.tr][m.tc] = mover;
+    board[m.fr][m.fc] = null;
+    const score = -quiesce(board, -beta, -alpha, nextTurn, qDepth - 1, deadline);
+    board[m.fr][m.fc] = mover;
+    board[m.tr][m.tc] = captured;
+    if (score >= beta) return beta;
+    if (score > alpha) alpha = score;
+  }
+  return alpha;
+}
+
+function negamax(board, depth, alpha, beta, turn, usePst, qMax, deadline) {
+  if (depth <= 0) {
+    if (qMax > 0) return quiesce(board, alpha, beta, turn, qMax, deadline);
+    return evaluateBoard(board, usePst) * (turn === 'R' ? 1 : -1);
+  }
+  if (performance.now() > deadline) {
+    return evaluateBoard(board, usePst) * (turn === 'R' ? 1 : -1);
+  }
+  const moves = getAllLegalMoves(board, turn, false);
+  if (moves.length === 0) {
+    return -19000 - depth * 10;
+  }
+  const nextTurn = turn === 'R' ? 'B' : 'R';
+  let best = -Infinity;
+  for (let i = 0; i < moves.length; i++) {
+    const m = moves[i];
+    const mover = board[m.fr][m.fc];
+    const captured = board[m.tr][m.tc];
+    board[m.tr][m.tc] = mover;
+    board[m.fr][m.fc] = null;
+    const score = -negamax(board, depth - 1, -beta, -alpha, nextTurn, usePst, qMax, deadline);
+    board[m.fr][m.fc] = mover;
+    board[m.tr][m.tc] = captured;
+    if (score > best) best = score;
+    if (score > alpha) alpha = score;
+    if (alpha >= beta) break;
+  }
+  return best;
+}
+
+function findOpeningBookMove(board, side) {
+  if (curStep >= 12) return null;
+  const candidates = [];
+  for (const preset of Object.values(PRESETS)) {
+    if (preset.moves.length <= curStep) continue;
+    let match = true;
+    for (let i = 0; i < curStep; i++) {
+      const hm = history[i + 1].lastMove;
+      const pm = preset.moves[i];
+      if (!hm || hm.fr !== pm.f[0] || hm.fc !== pm.f[1] || hm.tr !== pm.t[0] || hm.tc !== pm.t[1]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      const nextPm = preset.moves[curStep];
+      const [fr, fc] = nextPm.f;
+      const [tr, tc] = nextPm.t;
+      const p = board[fr] && board[fr][fc];
+      if (p && p.s === side) {
+        const legal = getLegalMoves(board, fr, fc);
+        if (legal.some(([lr, lc]) => lr === tr && lc === tc)) {
+          candidates.push({ fr, fc, tr, tc, comment: `【AI 定式庫・${preset.title}】${nextPm.c}` });
+        }
+      }
+    }
+  }
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function computeBestMove(board, side, level) {
+  if (level >= 3) {
+    const bookMove = findOpeningBookMove(board, side);
+    if (bookMove) return bookMove;
+  }
+
+  const workBoard = cloneBoard(board);
+  const rootMoves = getAllLegalMoves(workBoard, side, false);
+  if (rootMoves.length === 0) return null;
+  if (rootMoves.length === 1) {
+    const only = rootMoves[0];
+    return { fr: only.fr, fc: only.fc, tr: only.tr, tc: only.tc, comment: 'AI 唯一合法應著。' };
+  }
+
+  const cfg = {
+    1: { depth: 2, usePst: false, qMax: 0, jitter: 65, timeMs: 250, label: '新手' },
+    2: { depth: 3, usePst: true,  qMax: 0, jitter: 22, timeMs: 350, label: '業餘' },
+    3: { depth: 4, usePst: true,  qMax: 2, jitter: 5,  timeMs: 500, label: '好手' },
+    4: { depth: 5, usePst: true,  qMax: 4, jitter: 0,  timeMs: 750, label: '大師' }
+  }[level] || { depth: 4, usePst: true, qMax: 2, jitter: 5, timeMs: 500, label: '好手' };
+
+  const deadline = performance.now() + cfg.timeMs;
+  const nextTurn = side === 'R' ? 'B' : 'R';
+  let chosenMove = rootMoves[0];
+  let chosenScore = -Infinity;
+
+  const startDepth = level === 4 ? 3 : cfg.depth;
+  for (let d = startDepth; d <= cfg.depth; d++) {
+    let alpha = -Infinity, beta = Infinity;
+    let iterBestMove = rootMoves[0];
+    let iterBestScore = -Infinity;
+    let aborted = false;
+
+    for (let i = 0; i < rootMoves.length; i++) {
+      if (d > startDepth && performance.now() > deadline) {
+        aborted = true;
+        break;
+      }
+      const m = rootMoves[i];
+      const mover = workBoard[m.fr][m.fc];
+      const captured = workBoard[m.tr][m.tc];
+      workBoard[m.tr][m.tc] = mover;
+      workBoard[m.fr][m.fc] = null;
+      let score = -negamax(workBoard, d - 1, -beta, -alpha, nextTurn, cfg.usePst, cfg.qMax, deadline);
+      workBoard[m.fr][m.fc] = mover;
+      workBoard[m.tr][m.tc] = captured;
+
+      if (cfg.jitter > 0) {
+        score += (Math.random() * 2 - 1) * cfg.jitter;
+      }
+      m.lastScore = score;
+      if (score > iterBestScore) {
+        iterBestScore = score;
+        iterBestMove = m;
+      }
+      if (score > alpha) alpha = score;
+    }
+
+    if (!aborted) {
+      chosenMove = iterBestMove;
+      chosenScore = iterBestScore;
+      rootMoves.sort((a, b) => (b.lastScore || 0) - (a.lastScore || 0));
+    }
+  }
+
+  const evalPawn = (chosenScore / 100).toFixed(1);
+  const sign = chosenScore >= 0 ? '+' : '';
+  return {
+    fr: chosenMove.fr,
+    fc: chosenMove.fc,
+    tr: chosenMove.tr,
+    tc: chosenMove.tc,
+    comment: `【AI ${cfg.label}評估：${sign}${evalPawn} 兵】`
+  };
+}
+
+function onAiConfigChange() {
+  const modeVal = document.getElementById('aiModeSelect').value;
+  const lvVal = parseInt(document.getElementById('aiLevelSelect').value, 10);
+  aiMode = ['off', 'B', 'R'].includes(modeVal) ? modeVal : 'off';
+  aiLevel = [1, 2, 3, 4].includes(lvVal) ? lvVal : 3;
+  aiSessionId++;
+  aiThinking = false;
+  hintMove = null;
+  renderAll();
+  maybeTriggerAi();
+}
+
+function maybeTriggerAi() {
+  if (aiMode === 'off') return;
+  const cur = history[curStep];
+  if (!cur || cur.turn !== aiMode) return;
+  const state = evaluateGameState(cur.board, cur.turn);
+  if (state.over) return;
+
+  const session = ++aiSessionId;
+  aiThinking = true;
+  renderAll();
+
+  setTimeout(() => {
+    if (session !== aiSessionId) return;
+    const latest = history[curStep];
+    if (!latest || latest.turn !== aiMode) {
+      aiThinking = false;
+      renderAll();
+      return;
+    }
+    const best = computeBestMove(latest.board, latest.turn, aiLevel);
+    aiThinking = false;
+    if (!best) {
+      renderAll();
+      return;
+    }
+    const legal = getLegalMoves(latest.board, best.fr, best.fc);
+    if (legal.some(([lr, lc]) => lr === best.tr && lc === best.tc)) {
+      makeMove(best.fr, best.fc, best.tr, best.tc, best.comment);
+    } else {
+      renderAll();
+    }
+  }, 60);
+}
+
+function requestAiHint() {
+  if (aiThinking) return;
+  const cur = history[curStep];
+  const state = evaluateGameState(cur.board, cur.turn);
+  if (state.over) return;
+
+  if (hintMove) {
+    const { fr, fc, tr, tc, comment } = hintMove;
+    const legal = getLegalMoves(cur.board, fr, fc);
+    if (legal.some(([lr, lc]) => lr === tr && lc === tc)) {
+      makeMove(fr, fc, tr, tc, comment || '採納 AI 支招建議。');
+      return;
+    }
+  }
+
+  const best = computeBestMove(cur.board, cur.turn, Math.max(aiLevel, 3));
+  if (!best) return;
+  const notation = getNotation(cur.board, best.fr, best.fc, best.tr, best.tc);
+  hintMove = { ...best, notation };
+  selected = [best.fr, best.fc];
+  validMoves = getLegalMoves(cur.board, best.fr, best.fc);
+  renderAll();
+}
 
 document.getElementById('presetSelect').addEventListener('change', e => {
   const key = e.target.value;
@@ -785,7 +1195,7 @@ function loadAndVerifySteps(title, steps) {
 
   const prevHistory = history;
   const prevStep = curStep;
-  resetGame();
+  resetGame(true);
   if (typeof title === 'string' && title.trim()) {
     history[0].comment = title.trim().slice(0, 60);
   }
@@ -826,7 +1236,7 @@ function loadAndVerifySteps(title, steps) {
       return false;
     }
     const comment = typeof m.c === 'string' ? m.c.slice(0, 2000) : '';
-    makeMove(fr, fc, tr, tc, comment);
+    makeMove(fr, fc, tr, tc, comment, true);
   }
   return true;
 }
