@@ -38,6 +38,8 @@
   .ai-profile-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.86rem; font-weight: bold; color: #fbbf24; }
   .ai-profile-tag { font-size: 0.72rem; background: #3a2e21; color: #fde68a; padding: 1px 7px; border-radius: 99px; font-weight: normal; }
   .ai-profile-bio { font-size: 0.78rem; color: #bfb3a6; line-height: 1.38; }
+  .ai-ponder-status { font-size: 0.74rem; color: #38bdf8; margin-top: 2px; padding-top: 4px; border-top: 1px dashed #332b24; display: flex; justify-content: space-between; align-items: center; }
+  .ai-ponder-status.idle { color: #887a6e; }
   .save-bar { display: flex; gap: 6px; align-items: center; background: #1e1a16; padding: 7px 8px; border-radius: 6px; border: 1px solid #38302a; }
   .save-bar select { flex: 1; min-width: 0; }
   .move-list { flex: 1; height: 270px; overflow-y: auto; background: #181512; border-radius: 6px; padding: 8px; border: 1px solid #38302a; display: grid; grid-template-columns: 44px 1fr 1fr; gap: 4px; align-content: start; font-size: 0.92rem; }
@@ -110,6 +112,7 @@
         <span class="ai-profile-tag" id="aiProfileBadge">Lv.4｜14 層算殺</span>
       </div>
       <div class="ai-profile-bio" id="aiProfileBio">縱橫棋壇的頂尖特級大師，算路深遠冷酷，對臥槽馬、鐵門栓與九宮困殺極為敏銳，一旦奪得先手便寸步不讓。</div>
+      <div class="ai-ponder-status" id="aiPonderStatus">🧠 對手回合背景預思考已啟用</div>
     </div>
 
     <div class="save-bar">
@@ -593,6 +596,7 @@ function validateAllPresets() {
 }
 
 function resetGame(skipAiTrigger = false) {
+  if (typeof stopPondering === 'function') stopPondering();
   aiSessionId++;
   aiThinking = false;
   hintMove = null;
@@ -620,6 +624,7 @@ function getNotation(board, fr, fc, tr, tc) {
 }
 
 function makeMove(fr, fc, tr, tc, comment = "", skipAiTrigger = false) {
+  if (typeof stopPondering === 'function') stopPondering(true);
   const cur = history[curStep];
   const nextB = cloneBoard(cur.board);
   const notation = getNotation(cur.board, fr, fc, tr, tc);
@@ -789,6 +794,7 @@ function updateAiProfileUI() {
   if (nameEl) nameEl.textContent = `對手：${prof.name}（${prof.title}）`;
   if (badgeEl) badgeEl.textContent = prof.badge;
   if (bioEl) bioEl.textContent = prof.bio;
+  if (typeof updatePonderStatusUI === 'function') updatePonderStatusUI();
 }
 
 function renderAll() {
@@ -880,6 +886,7 @@ canvas.addEventListener('click', e => {
 
 function goStep(s) {
   if (s < 0 || s >= history.length) return;
+  if (typeof stopPondering === 'function') stopPondering();
   aiSessionId++;
   aiThinking = false;
   hintMove = null;
@@ -887,9 +894,11 @@ function goStep(s) {
   selected = null;
   validMoves = [];
   renderAll();
+  if (typeof startPonderingIfNeeded === 'function') startPonderingIfNeeded();
 }
 function undoMove() {
   if (curStep <= 0) return;
+  if (typeof stopPondering === 'function') stopPondering();
   aiSessionId++;
   aiThinking = false;
   hintMove = null;
@@ -1242,8 +1251,8 @@ function generateOrderedMoves(board, side, ply, ttMove, capturesOnly) {
   return moves;
 }
 
-function getAllLegalMoves(board, side, capturesOnly = false) {
-  const pseudo = generateOrderedMoves(board, side, 0, 0, capturesOnly);
+function getAllLegalMoves(board, side, capturesOnly = false, ttMove = 0) {
+  const pseudo = generateOrderedMoves(board, side, 0, ttMove, capturesOnly);
   const legal = [];
   for (let i = 0; i < pseudo.length; i++) {
     const m = pseudo[i];
@@ -1509,6 +1518,239 @@ function findOpeningBookMove(board, side) {
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
+// ==================== 對手回合持續背景預思考引擎 (Time-Sliced Pondering) ====================
+let ponderTimer = null;
+let ponderState = null;
+let lastCompletedPonder = null;
+
+function updatePonderStatusUI() {
+  const el = document.getElementById('aiPonderStatus');
+  if (!el) return;
+  if (aiMode === 'off') {
+    el.className = 'ai-ponder-status idle';
+    el.textContent = '💤 雙人打譜模式（背景預思考關閉）';
+    return;
+  }
+  const cur = history[curStep];
+  if (!cur) return;
+  const state = evaluateGameState(cur.board, cur.turn);
+  if (state.over) {
+    el.className = 'ai-ponder-status idle';
+    el.textContent = '🏁 對局已結束';
+    return;
+  }
+  if (aiThinking || cur.turn === aiMode) {
+    el.className = 'ai-ponder-status';
+    const pNodes = lastCompletedPonder ? `（已載入預思考 ${(lastCompletedPonder.nodes / 1000).toFixed(1)}k 節點）` : '';
+    el.textContent = `🔥 AI 實戰決策運算中${pNodes}...`;
+    return;
+  }
+  if (ponderState) {
+    el.className = 'ai-ponder-status';
+    const kNodes = (ponderState.totalNodes / 1000).toFixed(1);
+    const predNotat = ponderState.bestHumanNotation ? `｜預測對手：${ponderState.bestHumanNotation}` : '';
+    if (ponderState.done) {
+      el.textContent = `⚡ 背景推演就緒：已預載 ${ponderState.reachedDepth} 層變化 (${kNodes}k 節點)${predNotat}`;
+    } else {
+      el.textContent = `🧠 對手回合持續推演中：第 ${ponderState.d} 層 (${kNodes}k 節點)${predNotat}`;
+    }
+  } else {
+    el.className = 'ai-ponder-status idle';
+    el.textContent = '🧠 對手回合背景預思考待命中';
+  }
+}
+
+function stopPondering(preserveForNextTurn = false) {
+  if (ponderTimer !== null) {
+    clearTimeout(ponderTimer);
+    ponderTimer = null;
+  }
+  if (preserveForNextTurn && ponderState && ponderState.totalNodes > 0) {
+    lastCompletedPonder = {
+      step: ponderState.step,
+      nodes: ponderState.totalNodes,
+      depth: ponderState.reachedDepth
+    };
+  } else if (!preserveForNextTurn) {
+    lastCompletedPonder = null;
+  }
+  ponderState = null;
+  updatePonderStatusUI();
+}
+
+function startPonderingIfNeeded() {
+  stopPondering(false);
+  if (aiMode === 'off' || aiThinking) return;
+  const cur = history[curStep];
+  if (!cur || cur.turn === aiMode) return;
+  const state = evaluateGameState(cur.board, cur.turn);
+  if (state.over) return;
+
+  const prof = AI_PROFILES[aiLevel] || AI_PROFILES[4];
+  const workBoard = cloneBoard(cur.board);
+  const [rootLo, rootHi] = computeBoardHash(workBoard, cur.turn);
+  const rootTtIdx = rootLo & TT_MASK;
+  const rootTtMove = (ttDepth[rootTtIdx] > 0 && ttKeyLo[rootTtIdx] === rootLo && ttKeyHi[rootTtIdx] === rootHi)
+    ? ttBestMove[rootTtIdx]
+    : 0;
+  const rootMoves = getAllLegalMoves(workBoard, cur.turn, false, rootTtMove);
+  if (rootMoves.length === 0) return;
+
+  const ponderHashSet = new Set();
+  for (let s = 0; s < curStep; s++) {
+    const [hLo] = computeBoardHash(history[s].board, history[s].turn);
+    ponderHashSet.add(hLo);
+  }
+
+  const maxDepth = aiLevel === 1 ? 5 : Math.min(18, prof.depth + 2);
+  ponderState = {
+    session: aiSessionId,
+    step: curStep,
+    side: cur.turn,
+    aiSide: aiMode,
+    prof,
+    workBoard,
+    rootLo,
+    rootHi,
+    rootMoves,
+    ponderHashSet,
+    d: 2,
+    maxDepth,
+    moveIdx: 0,
+    alpha: -Infinity,
+    beta: Infinity,
+    iterBestMove: rootMoves[0],
+    iterBestScore: -Infinity,
+    reachedDepth: 1,
+    totalNodes: 0,
+    sliceRetries: 0,
+    bestHumanNotation: getNotation(cur.board, rootMoves[0].fr, rootMoves[0].fc, rootMoves[0].tr, rootMoves[0].tc),
+    done: false
+  };
+  updatePonderStatusUI();
+  ponderTimer = setTimeout(runPonderSlice, 30);
+}
+
+function runPonderSlice() {
+  ponderTimer = null;
+  if (!ponderState || ponderState.done || ponderState.session !== aiSessionId || aiThinking || aiMode === 'off') {
+    return;
+  }
+  const cur = history[curStep];
+  if (!cur || curStep !== ponderState.step || cur.turn !== ponderState.side) {
+    stopPondering(false);
+    return;
+  }
+
+  gameHashSet = ponderState.ponderHashSet;
+  pathHashLo[0] = ponderState.rootLo;
+  searchNodes = 0;
+  searchAborted = false;
+  const sliceDeadline = performance.now() + 18; // 每次僅占用 18ms 時間切片，確保 60fps 零延遲點擊體驗
+  const { workBoard, rootMoves, prof, rootLo, rootHi, aiSide } = ponderState;
+
+  while (ponderState.d <= ponderState.maxDepth) {
+    const d = ponderState.d;
+    const i = ponderState.moveIdx;
+    const m = rootMoves[i];
+    const mover = workBoard[m.fr][m.fc];
+    const captured = workBoard[m.tr][m.tc];
+    workBoard[m.tr][m.tc] = mover;
+    workBoard[m.fr][m.fc] = null;
+
+    const givesCheck = isInCheck(workBoard, aiSide);
+    const pIdx = PIECE_IDX[mover.s + '_' + mover.t];
+    const fromSq = m.fr * 9 + m.fc;
+    const toSq = m.tr * 9 + m.tc;
+    let nextLo = (rootLo ^ ZOBRIST_LO[pIdx][fromSq] ^ ZOBRIST_LO[pIdx][toSq] ^ Z_SIDE_LO) >>> 0;
+    let nextHi = (rootHi ^ ZOBRIST_HI[pIdx][fromSq] ^ ZOBRIST_HI[pIdx][toSq] ^ Z_SIDE_HI) >>> 0;
+    if (captured) {
+      const cIdx = PIECE_IDX[captured.s + '_' + captured.t];
+      nextLo = (nextLo ^ ZOBRIST_LO[cIdx][toSq]) >>> 0;
+      nextHi = (nextHi ^ ZOBRIST_HI[cIdx][toSq]) >>> 0;
+    }
+
+    let score;
+    // 對人類前 3 個最可能候選著法 (i < 3) 均以完整窗口搜尋，讓置換表精確預存 (ttFlag=1) AI 的最佳應手
+    if (i < 3) {
+      score = -negamax(
+        workBoard, d - 1, -Infinity, Infinity, aiSide, 1,
+        nextLo, nextHi, true, prof.useTactics, prof.qMax, sliceDeadline, givesCheck
+      );
+    } else {
+      score = -negamax(
+        workBoard, d - 1, -ponderState.alpha - 1, -ponderState.alpha, aiSide, 1,
+        nextLo, nextHi, true, prof.useTactics, prof.qMax, sliceDeadline, givesCheck
+      );
+      if (!searchAborted && score > ponderState.alpha) {
+        score = -negamax(
+          workBoard, d - 1, -Infinity, -ponderState.alpha, aiSide, 1,
+          nextLo, nextHi, true, prof.useTactics, prof.qMax, sliceDeadline, givesCheck
+        );
+      }
+    }
+
+    workBoard[m.fr][m.fc] = mover;
+    workBoard[m.tr][m.tc] = captured;
+
+    if (searchAborted) {
+      ponderState.sliceRetries++;
+      // 若單一深層分支已完成的子樹均已寫入置換表，下一時間切片將透過 TT 命中瞬間跳過已算節點並接續搜完
+      if (ponderState.sliceRetries <= 35) {
+        break;
+      }
+      // 超過單步切片上限則推進至下一候選步
+      searchAborted = false;
+      ponderState.sliceRetries = 0;
+      ponderState.moveIdx++;
+    } else {
+      ponderState.sliceRetries = 0;
+      m.lastScore = score;
+      if (score > ponderState.iterBestScore) {
+        ponderState.iterBestScore = score;
+        ponderState.iterBestMove = m;
+      }
+      if (score > ponderState.alpha) {
+        ponderState.alpha = score;
+      }
+      ponderState.moveIdx++;
+    }
+
+    if (ponderState.moveIdx >= rootMoves.length) {
+      ponderState.reachedDepth = d;
+      rootMoves.sort((a, b) => (b.lastScore ?? -999999) - (a.lastScore ?? -999999));
+      const bestHm = rootMoves[0];
+      ponderState.bestHumanNotation = getNotation(cur.board, bestHm.fr, bestHm.fc, bestHm.tr, bestHm.tc);
+      const rTtIdx = rootLo & TT_MASK;
+      ttKeyLo[rTtIdx] = rootLo;
+      ttKeyHi[rTtIdx] = rootHi;
+      ttDepth[rTtIdx] = d;
+      ttScore[rTtIdx] = ponderState.iterBestScore;
+      ttBestMove[rTtIdx] = bestHm.code;
+      ttFlag[rTtIdx] = 1;
+
+      if (Math.abs(ponderState.iterBestScore) > 18000 || d >= ponderState.maxDepth) {
+        ponderState.done = true;
+        break;
+      }
+      ponderState.d++;
+      ponderState.moveIdx = 0;
+      ponderState.alpha = -Infinity;
+      ponderState.beta = Infinity;
+      ponderState.iterBestMove = rootMoves[0];
+      ponderState.iterBestScore = -Infinity;
+    }
+
+    if (performance.now() >= sliceDeadline) break;
+  }
+
+  ponderState.totalNodes += searchNodes;
+  updatePonderStatusUI();
+  if (!ponderState.done) {
+    ponderTimer = setTimeout(runPonderSlice, 5);
+  }
+}
+
 function computeBestMove(board, side, level) {
   const prof = AI_PROFILES[level] || AI_PROFILES[4];
   if (level >= 1) {
@@ -1517,18 +1759,28 @@ function computeBestMove(board, side, level) {
   }
 
   const workBoard = cloneBoard(board);
-  const rootMoves = getAllLegalMoves(workBoard, side, false);
+  const [rootLo, rootHi] = computeBoardHash(workBoard, side);
+  const rootTtIdx = rootLo & TT_MASK;
+  const hasRootTt = (ttDepth[rootTtIdx] > 0 && ttKeyLo[rootTtIdx] === rootLo && ttKeyHi[rootTtIdx] === rootHi);
+  const rootTtMove = hasRootTt ? ttBestMove[rootTtIdx] : 0;
+
+  const rootMoves = getAllLegalMoves(workBoard, side, false, rootTtMove);
   if (rootMoves.length === 0) return null;
   if (rootMoves.length === 1) {
     const only = rootMoves[0];
     return { fr: only.fr, fc: only.fc, tr: only.tr, tc: only.tc, comment: `【${prof.name}】唯一合法應著。` };
   }
 
+  const ponderBonusNodes = (lastCompletedPonder && lastCompletedPonder.step === curStep - 1)
+    ? lastCompletedPonder.nodes
+    : 0;
+  lastCompletedPonder = null;
+
   searchNodes = 0;
   searchAborted = false;
   killerMove1.fill(0);
   killerMove2.fill(0);
-  for (let i = 0; i < historyHeuristic.length; i++) historyHeuristic[i] >>= 2;
+  for (let i = 0; i < historyHeuristic.length; i++) historyHeuristic[i] >>= 1;
 
   gameHashSet = new Set();
   for (let s = 0; s < curStep; s++) {
@@ -1536,15 +1788,16 @@ function computeBestMove(board, side, level) {
     gameHashSet.add(hLo);
   }
 
-  const [rootLo, rootHi] = computeBoardHash(workBoard, side);
   pathHashLo[0] = rootLo;
-  const deadline = performance.now() + prof.timeMs;
+  const startTime = performance.now();
+  const deadline = startTime + prof.timeMs;
   const nextTurn = side === 'R' ? 'B' : 'R';
   let chosenMove = rootMoves[0];
-  let chosenScore = -Infinity;
-  let reachedDepth = 1;
+  let chosenScore = (hasRootTt && ttFlag[rootTtIdx] === 1) ? ttScore[rootTtIdx] : -Infinity;
+  let reachedDepth = (hasRootTt && ttFlag[rootTtIdx] === 1) ? Math.min(prof.depth, ttDepth[rootTtIdx]) : 1;
+  let maxTargetDepth = prof.depth;
 
-  for (let d = 2; d <= prof.depth; d++) {
+  for (let d = 2; d <= maxTargetDepth; d++) {
     let alpha = -Infinity, beta = Infinity;
     let iterBestMove = rootMoves[0];
     let iterBestScore = -Infinity;
@@ -1611,7 +1864,19 @@ function computeBestMove(board, side, level) {
       chosenScore = iterBestScore;
       reachedDepth = d;
       rootMoves.sort((a, b) => (b.lastScore ?? -999999) - (a.lastScore ?? -999999));
+      ttKeyLo[rootTtIdx] = rootLo;
+      ttKeyHi[rootTtIdx] = rootHi;
+      ttDepth[rootTtIdx] = d;
+      ttScore[rootTtIdx] = chosenScore;
+      ttBestMove[rootTtIdx] = chosenMove.code;
+      ttFlag[rootTtIdx] = 1;
       if (chosenScore > 18000) break;
+      // 若背景預思考已將置換表預熱完畢，使原定深度 d 瞬間完成且時間充裕，自動往更深處多推進 1～2 層！
+      if (d === prof.depth && prof.jitter === 0 && ponderBonusNodes > 1000) {
+        const elapsed = performance.now() - startTime;
+        if (elapsed < prof.timeMs * 0.25) maxTargetDepth = Math.min(18, prof.depth + 2);
+        else if (elapsed < prof.timeMs * 0.5) maxTargetDepth = Math.min(18, prof.depth + 1);
+      }
     } else {
       // 僅在同深度 d 已完整搜完 rootMoves[0] 且發現比 rootMoves[0] 同深度分數更高的完整著法時才採納（防止奇偶層分數偏移污染）
       if (iterBestMove !== rootMoves[0] && rootMoves[0].lastScore !== undefined && iterBestScore > rootMoves[0].lastScore) {
@@ -1627,16 +1892,20 @@ function computeBestMove(board, side, level) {
   const scoreDesc = Math.abs(chosenScore) > 18000
     ? (chosenScore > 0 ? '必勝殺棋!' : '面臨絕殺')
     : `${sign}${evalPawn} 兵`;
+  const nodeDesc = ponderBonusNodes > 0
+    ? `實戰 ${(searchNodes / 1000).toFixed(1)}k + ⚡預思考 ${(ponderBonusNodes / 1000).toFixed(1)}k 節點`
+    : `${(searchNodes / 1000).toFixed(1)}k 節點`;
   return {
     fr: chosenMove.fr,
     fc: chosenMove.fc,
     tr: chosenMove.tr,
     tc: chosenMove.tc,
-    comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${(searchNodes / 1000).toFixed(1)}k 節點)｜評估：${scoreDesc}】`
+    comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${nodeDesc})｜評估：${scoreDesc}】`
   };
 }
 
 function onAiConfigChange() {
+  stopPondering(false);
   const modeVal = document.getElementById('aiModeSelect').value;
   const lvVal = parseInt(document.getElementById('aiLevelSelect').value, 10);
   aiMode = ['off', 'B', 'R'].includes(modeVal) ? modeVal : 'off';
@@ -1649,12 +1918,24 @@ function onAiConfigChange() {
 }
 
 function maybeTriggerAi() {
-  if (aiMode === 'off') return;
+  if (aiMode === 'off') {
+    stopPondering(false);
+    return;
+  }
   const cur = history[curStep];
-  if (!cur || cur.turn !== aiMode) return;
+  if (!cur) return;
   const state = evaluateGameState(cur.board, cur.turn);
-  if (state.over) return;
+  if (state.over) {
+    stopPondering(false);
+    return;
+  }
+  // 當輪到人類玩家行棋時，立即啟動背景時間切片預思考 (Pondering)
+  if (cur.turn !== aiMode) {
+    startPonderingIfNeeded();
+    return;
+  }
 
+  stopPondering(true);
   const session = ++aiSessionId;
   aiThinking = true;
   renderAll();
@@ -1688,6 +1969,7 @@ function requestAiHint() {
   const state = evaluateGameState(cur.board, cur.turn);
   if (state.over) return;
 
+  stopPondering(true);
   if (hintMove) {
     const { fr, fc, tr, tc, comment } = hintMove;
     const legal = getLegalMoves(cur.board, fr, fc);
@@ -1704,6 +1986,7 @@ function requestAiHint() {
   selected = [best.fr, best.fc];
   validMoves = getLegalMoves(cur.board, best.fr, best.fc);
   renderAll();
+  startPonderingIfNeeded();
 }
 
 document.getElementById('presetSelect').addEventListener('change', e => {
