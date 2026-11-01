@@ -558,6 +558,9 @@ function XiangqiEngineFactory() {
   const TT_BITS = 19;
   const TT_SIZE = 1 << TT_BITS;
   const TT_MASK = TT_SIZE - 1;
+  // 搜尋窗口一律使用有限邊界（不可用 ±Infinity），殺棋分數約為 ±19000~19500
+  const SEARCH_INF = 30000;
+  const MATE_BOUND = 18000;
   let ttKeyLo = null, ttKeyHi = null, ttDepth = null, ttFlag = null, ttScore = null, ttBestMove = null;
   function ensureTT() {
     if (ttKeyLo) return;
@@ -915,7 +918,9 @@ function XiangqiEngineFactory() {
     const nextTurn = turn === 'R' ? 'B' : 'R';
 
     // Null-Move Pruning (空著裁剪)
-    if (allowNull && !inChk && depth >= 3 && ply > 0) {
+    // beta 必須是有限的非殺棋分數：若 beta 為無限大，空著子節點的窗口 (-beta, -beta+1) 會退化成 (-∞, -∞)，
+    // 子節點直接回傳 -∞，導致本節點誤判為 +∞ 截斷，整棵搜尋樹的分數全部失真。
+    if (allowNull && !inChk && depth >= 3 && ply > 0 && beta < MATE_BOUND && beta > -MATE_BOUND) {
       const nullR = depth >= 6 ? 3 : 2;
       const nullScore = -negamax(
         board, depth - 1 - nullR, -beta, -beta + 1, nextTurn, ply + 1,
@@ -1185,8 +1190,8 @@ function XiangqiEngineFactory() {
       d: 2,
       maxDepth,
       moveIdx: 0,
-      alpha: -Infinity,
-      beta: Infinity,
+      alpha: -SEARCH_INF,
+      beta: SEARCH_INF,
       iterBestMove: rootMoves[0],
       iterBestScore: -Infinity,
       reachedDepth: 1,
@@ -1234,7 +1239,7 @@ function XiangqiEngineFactory() {
       let score;
       if (i < 3) {
         score = -negamax(
-          workBoard, d - 1, -Infinity, Infinity, aiSide, 1,
+          workBoard, d - 1, -SEARCH_INF, SEARCH_INF, aiSide, 1,
           nextLo, nextHi, true, prof.useTactics, prof.qMax, sliceDeadline, givesCheck
         );
       } else {
@@ -1244,7 +1249,7 @@ function XiangqiEngineFactory() {
         );
         if (!searchAborted && score > ponderState.alpha) {
           score = -negamax(
-            workBoard, d - 1, -Infinity, -ponderState.alpha, aiSide, 1,
+            workBoard, d - 1, -SEARCH_INF, -ponderState.alpha, aiSide, 1,
             nextLo, nextHi, true, prof.useTactics, prof.qMax, sliceDeadline, givesCheck
           );
         }
@@ -1292,8 +1297,8 @@ function XiangqiEngineFactory() {
         }
         ponderState.d++;
         ponderState.moveIdx = 0;
-        ponderState.alpha = -Infinity;
-        ponderState.beta = Infinity;
+        ponderState.alpha = -SEARCH_INF;
+        ponderState.beta = SEARCH_INF;
         ponderState.iterBestMove = rootMoves[0];
         ponderState.iterBestScore = -Infinity;
       }
@@ -1355,7 +1360,7 @@ function XiangqiEngineFactory() {
     let maxTargetDepth = prof.depth;
 
     for (let d = 2; d <= maxTargetDepth; d++) {
-      let alpha = -Infinity, beta = Infinity;
+      let alpha = -SEARCH_INF, beta = SEARCH_INF;
       let iterBestMove = rootMoves[0];
       let iterBestScore = -Infinity;
 
@@ -1444,7 +1449,9 @@ function XiangqiEngineFactory() {
 
     const evalPawn = (chosenScore / 100).toFixed(1);
     const sign = chosenScore >= 0 ? '+' : '';
-    const scoreDesc = Math.abs(chosenScore) > 18000
+    const scoreDesc = !Number.isFinite(chosenScore)
+      ? '計算中斷'
+      : Math.abs(chosenScore) > 18000
       ? (chosenScore > 0 ? '必勝殺棋!' : '面臨絕殺')
       : `${sign}${evalPawn} 兵`;
     const totalEvaluatedNodes = searchNodes + ponderBonusNodes;
