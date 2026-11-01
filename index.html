@@ -639,8 +639,73 @@ function makeMove(fr, fc, tr, tc, comment = "", skipAiTrigger = false) {
   selected = null;
   validMoves = [];
   hintMove = null;
+  if (!skipAiTrigger) autoSaveFinishedGame();
   renderAll();
   if (!skipAiTrigger) maybeTriggerAi();
+}
+
+// ==================== 終局自動存檔（僅存於使用者自己瀏覽器的 localStorage） ====================
+const MAX_AUTO_SAVES = 100;
+
+function formatAutoSaveTime(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function autoSaveFinishedGame() {
+  const cur = history[curStep];
+  if (!cur || curStep < 1) return;
+  const state = evaluateGameState(cur.board, cur.turn);
+  if (!state.over || (state.winner !== 'R' && state.winner !== 'B')) return;
+
+  const prof = AI_PROFILES[aiLevel] || AI_PROFILES[4];
+  let resultTag, opponent;
+  if (aiMode === 'R' || aiMode === 'B') {
+    const playerSide = aiMode === 'R' ? 'B' : 'R';
+    resultTag = state.winner === playerSide ? '勝' : '負';
+    opponent = `Lv.${aiLevel}${prof.name}`;
+  } else {
+    resultTag = state.winner === 'R' ? '紅勝' : '黑勝';
+    opponent = '雙人';
+  }
+  const now = new Date();
+  const title = `[自動][${resultTag}] ${opponent} ${formatAutoSaveTime(now)}`.slice(0, 60);
+  if (FORBIDDEN_KEYS.has(title)) return;
+
+  const steps = history.slice(1, curStep + 1).map(h => ({
+    f: [h.lastMove.fr, h.lastMove.fc],
+    t: [h.lastMove.tr, h.lastMove.tc],
+    c: typeof h.comment === 'string' ? h.comment.slice(0, 2000) : ''
+  }));
+  if (steps.length === 0 || steps.length > MAX_STEPS) return;
+
+  const records = getSavedRecords();
+  records[title] = {
+    title,
+    updatedAt: now.toISOString(),
+    auto: true,
+    result: resultTag,
+    opponent,
+    reason: state.reason,
+    steps
+  };
+
+  // 自動存檔最多保留 MAX_AUTO_SAVES 筆，超過時刪除最舊的自動存檔（手動存檔永不刪除）
+  const autoKeys = Object.keys(records)
+    .filter(k => records[k] && records[k].auto === true)
+    .sort((a, b) => String(records[a].updatedAt || '').localeCompare(String(records[b].updatedAt || '')));
+  while (autoKeys.length > MAX_AUTO_SAVES) {
+    delete records[autoKeys.shift()];
+  }
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  } catch (err) {
+    cur.autoSaveFailed = true;
+    return;
+  }
+  cur.autoSavedTitle = title;
+  refreshSavedSelect(title);
 }
 
 function b2s(r, c) {
@@ -805,7 +870,8 @@ function renderAll() {
   if (state.over) {
     statusBar.classList.remove('thinking');
     statusBar.classList.add('gameover');
-    turnText.textContent = `終局：${state.reason}`;
+    const saveNote = cur.autoSavedTitle ? '（已自動存檔）' : (cur.autoSaveFailed ? '（自動存檔失敗：空間不足）' : '');
+    turnText.textContent = `終局：${state.reason}${saveNote}`;
   } else if (aiThinking) {
     statusBar.classList.remove('gameover');
     statusBar.classList.add('thinking');
