@@ -38,8 +38,6 @@
   .ai-profile-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.86rem; font-weight: bold; color: #fbbf24; }
   .ai-profile-tag { font-size: 0.72rem; background: #3a2e21; color: #fde68a; padding: 1px 7px; border-radius: 99px; font-weight: normal; }
   .ai-profile-bio { font-size: 0.78rem; color: #bfb3a6; line-height: 1.38; }
-  .ai-ponder-status { font-size: 0.74rem; color: #38bdf8; margin-top: 2px; padding-top: 4px; border-top: 1px dashed #332b24; display: flex; justify-content: space-between; align-items: center; }
-  .ai-ponder-status.idle { color: #887a6e; }
   .save-bar { display: flex; gap: 6px; align-items: center; background: #1e1a16; padding: 7px 8px; border-radius: 6px; border: 1px solid #38302a; }
   .save-bar select { flex: 1; min-width: 0; }
   .move-list { flex: 1; height: 270px; overflow-y: auto; background: #181512; border-radius: 6px; padding: 8px; border: 1px solid #38302a; display: grid; grid-template-columns: 44px 1fr 1fr; gap: 4px; align-content: start; font-size: 0.92rem; }
@@ -109,10 +107,9 @@
     <div class="ai-profile" id="aiProfileCard">
       <div class="ai-profile-head">
         <span id="aiProfileName">對手：顧千帆（特級宗師）</span>
-        <span class="ai-profile-tag" id="aiProfileBadge">Lv.4｜14 層算殺</span>
+        <span class="ai-profile-tag" id="aiProfileBadge">Lv.4｜14 層算力</span>
       </div>
-      <div class="ai-profile-bio" id="aiProfileBio">縱橫棋壇的頂尖特級大師，算路深遠冷酷，對臥槽馬、鐵門栓與九宮困殺極為敏銳，一旦奪得先手便寸步不讓。</div>
-      <div class="ai-ponder-status" id="aiPonderStatus">🧠 對手回合背景預思考已啟用</div>
+      <div class="ai-profile-bio" id="aiProfileBio">殿堂級特級大師，深諳九宮氣數與子力協同。對臥槽馬、鐵門栓與悶宮殺機有極致嗅覺。</div>
     </div>
 
     <div class="save-bar">
@@ -752,37 +749,37 @@ const AI_PROFILES = {
   1: {
     name: '林小軒',
     title: '街頭棋童',
-    badge: '5層算力・前Lv.1',
+    badge: 'Lv.1｜5 層算力',
     depth: 5, useTactics: true, qMax: 3, jitter: 6, timeMs: 450,
     bio: '巷口雜貨店十一歲神童，酷愛快攻飛刀與當頭炮猛衝。攻勢凌厲但偶爾忽略後防空隙。'
   },
   2: {
     name: '陳鐵山',
     title: '公園擂台主',
-    badge: '8層算力・前Lv.3',
+    badge: 'Lv.2｜8 層算力',
     depth: 8, useTactics: true, qMax: 6, jitter: 0, timeMs: 1100,
     bio: '縱橫榕樹下三十年的快棋霸主，精通屏風馬與馬炮殘局，棄子搶攻毫不手軟。'
   },
   3: {
     name: '沈滄海',
     title: '省冠國手',
-    badge: '12層算力・前Lv.5',
+    badge: 'Lv.3｜12 層算力',
     depth: 12, useTactics: true, qMax: 10, jitter: 0, timeMs: 1800,
-    bio: '前省賽冠軍，修正了舊版宗師窩心馬與貪吃邊兵的盲點，雙車出動極快、攻守如淵。'
+    bio: '沉穩內斂的省賽冠軍國手，開局雙車出動極快，中盤陣型厚實、攻守如淵。'
   },
   4: {
     name: '顧千帆',
     title: '特級宗師',
-    badge: '14層算力・九段大國手',
+    badge: 'Lv.4｜14 層算力',
     depth: 14, useTactics: true, qMax: 12, jitter: 0, timeMs: 2400,
     bio: '殿堂級特級大師，深諳九宮氣數與子力協同。對臥槽馬、鐵門栓與悶宮殺機有極致嗅覺。'
   },
   5: {
     name: '天璣玄極',
     title: '深算棋神',
-    badge: '16層極限算力・零失誤',
+    badge: 'Lv.5｜16 層極限算力',
     depth: 16, useTactics: true, qMax: 14, jitter: 0, timeMs: 3200,
-    bio: '融合百萬置換表與將軍不減深延伸的終極引擎。算度深不可測，任何微小破綻皆化為絕殺。'
+    bio: '融合大型置換表與將軍延伸的終極引擎。算度深不可測，任何微小破綻皆化為絕殺。'
   }
 };
 
@@ -794,7 +791,6 @@ function updateAiProfileUI() {
   if (nameEl) nameEl.textContent = `對手：${prof.name}（${prof.title}）`;
   if (badgeEl) badgeEl.textContent = prof.badge;
   if (bioEl) bioEl.textContent = prof.bio;
-  if (typeof updatePonderStatusUI === 'function') updatePonderStatusUI();
 }
 
 function renderAll() {
@@ -1518,47 +1514,10 @@ function findOpeningBookMove(board, side) {
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-// ==================== 對手回合持續背景預思考引擎 (Time-Sliced Pondering) ====================
+// ==================== 對手回合靜默背景推演引擎 (Silent Time-Sliced Pondering) ====================
 let ponderTimer = null;
 let ponderState = null;
 let lastCompletedPonder = null;
-
-function updatePonderStatusUI() {
-  const el = document.getElementById('aiPonderStatus');
-  if (!el) return;
-  if (aiMode === 'off') {
-    el.className = 'ai-ponder-status idle';
-    el.textContent = '💤 雙人打譜模式（背景預思考關閉）';
-    return;
-  }
-  const cur = history[curStep];
-  if (!cur) return;
-  const state = evaluateGameState(cur.board, cur.turn);
-  if (state.over) {
-    el.className = 'ai-ponder-status idle';
-    el.textContent = '🏁 對局已結束';
-    return;
-  }
-  if (aiThinking || cur.turn === aiMode) {
-    el.className = 'ai-ponder-status';
-    const pNodes = lastCompletedPonder ? `（已載入預思考 ${(lastCompletedPonder.nodes / 1000).toFixed(1)}k 節點）` : '';
-    el.textContent = `🔥 AI 實戰決策運算中${pNodes}...`;
-    return;
-  }
-  if (ponderState) {
-    el.className = 'ai-ponder-status';
-    const kNodes = (ponderState.totalNodes / 1000).toFixed(1);
-    const predNotat = ponderState.bestHumanNotation ? `｜預測對手：${ponderState.bestHumanNotation}` : '';
-    if (ponderState.done) {
-      el.textContent = `⚡ 背景推演就緒：已預載 ${ponderState.reachedDepth} 層變化 (${kNodes}k 節點)${predNotat}`;
-    } else {
-      el.textContent = `🧠 對手回合持續推演中：第 ${ponderState.d} 層 (${kNodes}k 節點)${predNotat}`;
-    }
-  } else {
-    el.className = 'ai-ponder-status idle';
-    el.textContent = '🧠 對手回合背景預思考待命中';
-  }
-}
 
 function stopPondering(preserveForNextTurn = false) {
   if (ponderTimer !== null) {
@@ -1575,7 +1534,6 @@ function stopPondering(preserveForNextTurn = false) {
     lastCompletedPonder = null;
   }
   ponderState = null;
-  updatePonderStatusUI();
 }
 
 function startPonderingIfNeeded() {
@@ -1624,10 +1582,8 @@ function startPonderingIfNeeded() {
     reachedDepth: 1,
     totalNodes: 0,
     sliceRetries: 0,
-    bestHumanNotation: getNotation(cur.board, rootMoves[0].fr, rootMoves[0].fc, rootMoves[0].tr, rootMoves[0].tc),
     done: false
   };
-  updatePonderStatusUI();
   ponderTimer = setTimeout(runPonderSlice, 30);
 }
 
@@ -1671,7 +1627,6 @@ function runPonderSlice() {
     }
 
     let score;
-    // 對人類前 3 個最可能候選著法 (i < 3) 均以完整窗口搜尋，讓置換表精確預存 (ttFlag=1) AI 的最佳應手
     if (i < 3) {
       score = -negamax(
         workBoard, d - 1, -Infinity, Infinity, aiSide, 1,
@@ -1695,11 +1650,9 @@ function runPonderSlice() {
 
     if (searchAborted) {
       ponderState.sliceRetries++;
-      // 若單一深層分支已完成的子樹均已寫入置換表，下一時間切片將透過 TT 命中瞬間跳過已算節點並接續搜完
       if (ponderState.sliceRetries <= 35) {
         break;
       }
-      // 超過單步切片上限則推進至下一候選步
       searchAborted = false;
       ponderState.sliceRetries = 0;
       ponderState.moveIdx++;
@@ -1720,7 +1673,6 @@ function runPonderSlice() {
       ponderState.reachedDepth = d;
       rootMoves.sort((a, b) => (b.lastScore ?? -999999) - (a.lastScore ?? -999999));
       const bestHm = rootMoves[0];
-      ponderState.bestHumanNotation = getNotation(cur.board, bestHm.fr, bestHm.fc, bestHm.tr, bestHm.tc);
       const rTtIdx = rootLo & TT_MASK;
       ttKeyLo[rTtIdx] = rootLo;
       ttKeyHi[rTtIdx] = rootHi;
@@ -1745,7 +1697,6 @@ function runPonderSlice() {
   }
 
   ponderState.totalNodes += searchNodes;
-  updatePonderStatusUI();
   if (!ponderState.done) {
     ponderTimer = setTimeout(runPonderSlice, 5);
   }
@@ -1871,14 +1822,12 @@ function computeBestMove(board, side, level) {
       ttBestMove[rootTtIdx] = chosenMove.code;
       ttFlag[rootTtIdx] = 1;
       if (chosenScore > 18000) break;
-      // 若背景預思考已將置換表預熱完畢，使原定深度 d 瞬間完成且時間充裕，自動往更深處多推進 1～2 層！
       if (d === prof.depth && prof.jitter === 0 && ponderBonusNodes > 1000) {
         const elapsed = performance.now() - startTime;
         if (elapsed < prof.timeMs * 0.25) maxTargetDepth = Math.min(18, prof.depth + 2);
         else if (elapsed < prof.timeMs * 0.5) maxTargetDepth = Math.min(18, prof.depth + 1);
       }
     } else {
-      // 僅在同深度 d 已完整搜完 rootMoves[0] 且發現比 rootMoves[0] 同深度分數更高的完整著法時才採納（防止奇偶層分數偏移污染）
       if (iterBestMove !== rootMoves[0] && rootMoves[0].lastScore !== undefined && iterBestScore > rootMoves[0].lastScore) {
         chosenMove = iterBestMove;
         chosenScore = iterBestScore;
@@ -1892,15 +1841,13 @@ function computeBestMove(board, side, level) {
   const scoreDesc = Math.abs(chosenScore) > 18000
     ? (chosenScore > 0 ? '必勝殺棋!' : '面臨絕殺')
     : `${sign}${evalPawn} 兵`;
-  const nodeDesc = ponderBonusNodes > 0
-    ? `實戰 ${(searchNodes / 1000).toFixed(1)}k + ⚡預思考 ${(ponderBonusNodes / 1000).toFixed(1)}k 節點`
-    : `${(searchNodes / 1000).toFixed(1)}k 節點`;
+  const totalEvaluatedNodes = searchNodes + ponderBonusNodes;
   return {
     fr: chosenMove.fr,
     fc: chosenMove.fc,
     tr: chosenMove.tr,
     tc: chosenMove.tc,
-    comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${nodeDesc})｜評估：${scoreDesc}】`
+    comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${(totalEvaluatedNodes / 1000).toFixed(1)}k 節點)｜評估：${scoreDesc}】`
   };
 }
 
