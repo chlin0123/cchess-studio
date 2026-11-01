@@ -87,7 +87,7 @@
     <div class="ai-bar">
       <select id="aiModeSelect" onchange="onAiConfigChange()" title="選擇對弈模式">
         <option value="off">對弈：雙人打譜 (AI 關)</option>
-        <option value="B">對弈：電腦執黑 (玩家紅)</option>
+        <option value="B" selected>對弈：電腦執黑 (玩家紅)</option>
         <option value="R">對弈：電腦執紅 (玩家黑)</option>
       </select>
       <select id="aiLevelSelect" onchange="onAiConfigChange()" title="選擇 AI 難度等級">
@@ -147,7 +147,7 @@ let selected = null;
 let validMoves = [];
 let history = [];
 let curStep = 0;
-let aiMode = 'off';
+let aiMode = 'B';
 let aiLevel = 4;
 let aiThinking = false;
 let aiSessionId = 0;
