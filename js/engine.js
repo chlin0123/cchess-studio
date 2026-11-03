@@ -433,36 +433,36 @@ function XiangqiEngineFactory() {
     1: {
       name: '林小軒',
       title: '街頭棋童',
-      badge: 'Lv.1｜5 層算力',
+      badge: 'Lv.1｜5 層',
       depth: 5, useTactics: true, qMax: 3, jitter: 6, timeMs: 450,
       bio: '巷口雜貨店十一歲神童，酷愛快攻飛刀與當頭炮猛衝。攻勢凌厲但偶爾忽略後防空隙。'
     },
     2: {
       name: '陳鐵山',
       title: '公園擂台主',
-      badge: 'Lv.2｜8 層算力',
+      badge: 'Lv.2｜8 層',
       depth: 8, useTactics: true, qMax: 6, jitter: 0, timeMs: 1100,
       bio: '縱橫榕樹下三十年的快棋霸主，精通屏風馬與馬炮殘局，棄子搶攻毫不手軟。'
     },
     3: {
       name: '沈滄海',
       title: '省冠國手',
-      badge: 'Lv.3｜12 層算力',
-      depth: 12, useTactics: true, qMax: 10, jitter: 0, timeMs: 1800,
+      badge: 'Lv.3｜目標 12 層・每步最多 6 秒',
+      depth: 12, useTactics: true, qMax: 10, jitter: 0, timeMs: 6000,
       bio: '沉穩內斂的省賽冠軍國手，開局雙車出動極快，中盤陣型厚實、攻守如淵。'
     },
     4: {
       name: '顧千帆',
       title: '特級宗師',
-      badge: 'Lv.4｜14 層算力',
-      depth: 14, useTactics: true, qMax: 12, jitter: 0, timeMs: 2400,
+      badge: 'Lv.4｜目標 14 層・每步最多 12 秒',
+      depth: 14, useTactics: true, qMax: 12, jitter: 0, timeMs: 12000,
       bio: '殿堂級特級大師，深諳九宮氣數與子力協同。對臥槽馬、鐵門栓與悶宮殺機有極致嗅覺。'
     },
     5: {
       name: '天璣玄極',
       title: '深算棋神',
-      badge: 'Lv.5｜16 層極限算力',
-      depth: 16, useTactics: true, qMax: 14, jitter: 0, timeMs: 3200,
+      badge: 'Lv.5｜目標 16 層・每步最多 20 秒',
+      depth: 16, useTactics: true, qMax: 14, jitter: 0, timeMs: 20000,
       bio: '融合大型置換表與將軍延伸的終極引擎。算度深不可測，任何微小破綻皆化為絕殺。'
     }
   };
@@ -555,13 +555,15 @@ function XiangqiEngineFactory() {
     return [lo, hi];
   }
 
-  const TT_BITS = 19;
+  const TT_BITS = 20;   // 1,048,576 筆（約 17 MB），兩筆一組
   const TT_SIZE = 1 << TT_BITS;
   const TT_MASK = TT_SIZE - 1;
   // 搜尋窗口一律使用有限邊界（不可用 ±Infinity），殺棋分數約為 ±19000~19500
   const SEARCH_INF = 30000;
   const MATE_BOUND = 18000;
-  let ttKeyLo = null, ttKeyHi = null, ttDepth = null, ttFlag = null, ttScore = null, ttBestMove = null;
+  const ITER_GROWTH = 2.5;  // 預估下一層搜尋時間約為上一層的倍數
+  let ttKeyLo = null, ttKeyHi = null, ttDepth = null, ttFlag = null, ttScore = null, ttBestMove = null, ttAge = null;
+  let ttGen = 1;
   function ensureTT() {
     if (ttKeyLo) return;
     ttKeyLo = new Uint32Array(TT_SIZE);
@@ -570,6 +572,42 @@ function XiangqiEngineFactory() {
     ttFlag = new Uint8Array(TT_SIZE);
     ttScore = new Int32Array(TT_SIZE);
     ttBestMove = new Uint16Array(TT_SIZE);
+    ttAge = new Uint8Array(TT_SIZE);
+  }
+
+  /** 開始新一輪搜尋（新的局面）時呼叫：舊世代的深層紀錄可被覆蓋 */
+  function ttNewGeneration() {
+    ttGen = (ttGen % 255) + 1;
+  }
+
+  /** 查詢置換表，命中回傳索引，否則 -1。每組兩格：偶數格保留較深的結果，奇數格永遠覆蓋 */
+  function ttProbe(lo, hi) {
+    const i = (lo & TT_MASK) & ~1;
+    if (ttDepth[i] > 0 && ttKeyLo[i] === lo && ttKeyHi[i] === hi) return i;
+    const j = i + 1;
+    if (ttDepth[j] > 0 && ttKeyLo[j] === lo && ttKeyHi[j] === hi) return j;
+    return -1;
+  }
+
+  function ttStore(lo, hi, depth, score, move, flag) {
+    const i = (lo & TT_MASK) & ~1;
+    const j = i + 1;
+    let slot;
+    if (ttKeyLo[i] === lo && ttKeyHi[i] === hi && ttDepth[i] > 0) {
+      // 同一局面已在深度格：只有更深（或同深）才更新，否則放到覆蓋格
+      slot = (depth >= ttDepth[i] || ttAge[i] !== ttGen) ? i : j;
+    } else if (ttDepth[i] === 0 || ttAge[i] !== ttGen || depth >= ttDepth[i]) {
+      slot = i;
+    } else {
+      slot = j;
+    }
+    ttKeyLo[slot] = lo;
+    ttKeyHi[slot] = hi;
+    ttDepth[slot] = depth;
+    ttScore[slot] = score;
+    ttBestMove[slot] = move;
+    ttFlag[slot] = flag;
+    ttAge[slot] = ttGen;
   }
   const killerMove1 = new Uint16Array(32);
   const killerMove2 = new Uint16Array(32);
@@ -902,9 +940,9 @@ function XiangqiEngineFactory() {
     }
 
     const origAlpha = alpha;
-    const ttIdx = hLo & TT_MASK;
+    const ttIdx = ttProbe(hLo, hHi);
     let ttMove = 0;
-    if (ttDepth[ttIdx] > 0 && ttKeyLo[ttIdx] === hLo && ttKeyHi[ttIdx] === hHi) {
+    if (ttIdx >= 0) {
       ttMove = ttBestMove[ttIdx];
       if (ttDepth[ttIdx] >= depth && ply > 0) {
         const tts = ttScore[ttIdx];
@@ -1008,12 +1046,7 @@ function XiangqiEngineFactory() {
     if (legalCount === 0) return -19000 + ply * 10;
 
     if (!searchAborted) {
-      ttKeyLo[ttIdx] = hLo;
-      ttKeyHi[ttIdx] = hHi;
-      ttDepth[ttIdx] = depth;
-      ttScore[ttIdx] = best;
-      ttBestMove[ttIdx] = bestCode;
-      ttFlag[ttIdx] = best <= origAlpha ? 3 : (best >= beta ? 2 : 1);
+      ttStore(hLo, hHi, depth, best, bestCode, best <= origAlpha ? 3 : (best >= beta ? 2 : 1));
     }
     return best;
   }
@@ -1162,10 +1195,9 @@ function XiangqiEngineFactory() {
     const prof = AI_PROFILES[aiLevel] || AI_PROFILES[4];
     const workBoard = sanitizeBoard(board);
     const [rootLo, rootHi] = computeBoardHash(workBoard, humanSide);
-    const rootTtIdx = rootLo & TT_MASK;
-    const rootTtMove = (ttDepth[rootTtIdx] > 0 && ttKeyLo[rootTtIdx] === rootLo && ttKeyHi[rootTtIdx] === rootHi)
-      ? ttBestMove[rootTtIdx]
-      : 0;
+    ttNewGeneration();
+    const rootTtIdx = ttProbe(rootLo, rootHi);
+    const rootTtMove = rootTtIdx >= 0 ? ttBestMove[rootTtIdx] : 0;
     const rootMoves = getAllLegalMoves(workBoard, humanSide, false, rootTtMove);
     if (rootMoves.length === 0) return;
 
@@ -1181,6 +1213,7 @@ function XiangqiEngineFactory() {
       side: humanSide,
       aiSide,
       sliceMs: Math.max(5, Math.min(200, sliceMs | 0)),
+      maxRetries: Math.max(35, Math.ceil(15000 / Math.max(5, Math.min(200, sliceMs | 0)))),
       prof,
       workBoard,
       rootLo,
@@ -1197,9 +1230,51 @@ function XiangqiEngineFactory() {
       reachedDepth: 1,
       totalNodes: 0,
       sliceRetries: 0,
+      phase: 1,
+      phase1Depth: Math.min(9, prof.depth),
       done: false
     };
     ponderTimer = setTimeout(runPonderSlice, 30);
+  }
+
+  /**
+   * 預思考第二階段：第一階段已用全寬搜尋找出玩家最可能的著法後，
+   * 假設玩家就走這步，改從 AI 的角度對該局面做深度迭代搜尋。
+   * 玩家若真的走這步（猜中），AI 輪到時可直接沿用已算好的深層結果；
+   * 沒猜中時，第一階段留在置換表裡的資訊仍然有幫助。
+   */
+  function enterPredictedLine() {
+    const ps = ponderState;
+    const m = ps.rootMoves[0];
+    const board = ps.workBoard.map(row => row.slice());
+    board[m.tr][m.tc] = board[m.fr][m.fc];
+    board[m.fr][m.fc] = null;
+    const childSide = ps.aiSide;
+    const [lo, hi] = computeBoardHash(board, childSide);
+    const idx = ttProbe(lo, hi);
+    const moves = getAllLegalMoves(board, childSide, false, idx >= 0 ? ttBestMove[idx] : 0);
+    if (moves.length === 0) { ps.done = true; return; }
+    const hs = new Set(ps.ponderHashSet);
+    hs.add(ps.rootLo);
+    Object.assign(ps, {
+      phase: 2,
+      predicted: { fr: m.fr, fc: m.fc, tr: m.tr, tc: m.tc },
+      side: childSide,
+      aiSide: ps.side,          // 第二階段的「對手」是玩家
+      workBoard: board,
+      rootLo: lo,
+      rootHi: hi,
+      rootMoves: moves,
+      ponderHashSet: hs,
+      d: 2,
+      maxDepth: Math.min(18, ps.prof.depth + 1),
+      moveIdx: 0,
+      alpha: -SEARCH_INF,
+      beta: SEARCH_INF,
+      iterBestMove: moves[0],
+      iterBestScore: -Infinity,
+      sliceRetries: 0
+    });
   }
 
   function runPonderSlice() {
@@ -1260,7 +1335,7 @@ function XiangqiEngineFactory() {
 
       if (searchAborted) {
         ponderState.sliceRetries++;
-        if (ponderState.sliceRetries <= 35) {
+        if (ponderState.sliceRetries <= ponderState.maxRetries) {
           break;
         }
         searchAborted = false;
@@ -1283,14 +1358,12 @@ function XiangqiEngineFactory() {
         ponderState.reachedDepth = d;
         rootMoves.sort((a, b) => (b.lastScore ?? -999999) - (a.lastScore ?? -999999));
         const bestHm = rootMoves[0];
-        const rTtIdx = rootLo & TT_MASK;
-        ttKeyLo[rTtIdx] = rootLo;
-        ttKeyHi[rTtIdx] = rootHi;
-        ttDepth[rTtIdx] = d;
-        ttScore[rTtIdx] = ponderState.iterBestScore;
-        ttBestMove[rTtIdx] = bestHm.code;
-        ttFlag[rTtIdx] = 1;
+        ttStore(rootLo, rootHi, d, ponderState.iterBestScore, bestHm.code, 1);
 
+        if (ponderState.phase === 1 && d >= ponderState.phase1Depth && Math.abs(ponderState.iterBestScore) <= MATE_BOUND) {
+          enterPredictedLine();
+          break;   // 下一個時間切片從新的根局面開始
+        }
         if (Math.abs(ponderState.iterBestScore) > 18000 || d >= ponderState.maxDepth) {
           ponderState.done = true;
           break;
@@ -1322,8 +1395,8 @@ function XiangqiEngineFactory() {
     ensureTT();
     const workBoard = sanitizeBoard(board);
     const [rootLo, rootHi] = computeBoardHash(workBoard, side);
-    const rootTtIdx = rootLo & TT_MASK;
-    const hasRootTt = (ttDepth[rootTtIdx] > 0 && ttKeyLo[rootTtIdx] === rootLo && ttKeyHi[rootTtIdx] === rootHi);
+    const rootTtIdx = ttProbe(rootLo, rootHi);
+    const hasRootTt = rootTtIdx >= 0;
     const rootTtMove = hasRootTt ? ttBestMove[rootTtIdx] : 0;
 
     const rootMoves = getAllLegalMoves(workBoard, side, false, rootTtMove);
@@ -1336,7 +1409,9 @@ function XiangqiEngineFactory() {
     const ponderBonusNodes = (lastCompletedPonder && lastCompletedPonder.step === ctxStep - 1)
       ? lastCompletedPonder.nodes
       : 0;
+    const lastPonderDepth = ponderBonusNodes > 0 ? lastCompletedPonder.depth : 0;
     lastCompletedPonder = null;
+    if (ponderBonusNodes === 0) ttNewGeneration();
 
     searchNodes = 0;
     searchAborted = false;
@@ -1358,11 +1433,18 @@ function XiangqiEngineFactory() {
     let chosenScore = (hasRootTt && ttFlag[rootTtIdx] === 1) ? ttScore[rootTtIdx] : -Infinity;
     let reachedDepth = (hasRootTt && ttFlag[rootTtIdx] === 1) ? Math.min(prof.depth, ttDepth[rootTtIdx]) : 1;
     let maxTargetDepth = prof.depth;
+    let lastIterMs = 0;
+    const iterLog = [];
 
     for (let d = 2; d <= maxTargetDepth; d++) {
       let alpha = -SEARCH_INF, beta = SEARCH_INF;
       let iterBestMove = rootMoves[0];
       let iterBestScore = -Infinity;
+
+      // 每加深一層約需前一層的 2～3 倍時間：預估剩餘時間不夠完成下一層就提早結束，
+      // 避免白白讓玩家等到時間上限（未完成的一層多半用不上）
+      const iterStart = performance.now();
+      if (d > 4 && (iterStart - startTime) + lastIterMs * ITER_GROWTH > prof.timeMs) break;
 
       for (let i = 0; i < rootMoves.length; i++) {
         if (d >= 3 && performance.now() > deadline) {
@@ -1426,12 +1508,9 @@ function XiangqiEngineFactory() {
         chosenScore = iterBestScore;
         reachedDepth = d;
         rootMoves.sort((a, b) => (b.lastScore ?? -999999) - (a.lastScore ?? -999999));
-        ttKeyLo[rootTtIdx] = rootLo;
-        ttKeyHi[rootTtIdx] = rootHi;
-        ttDepth[rootTtIdx] = d;
-        ttScore[rootTtIdx] = chosenScore;
-        ttBestMove[rootTtIdx] = chosenMove.code;
-        ttFlag[rootTtIdx] = 1;
+        ttStore(rootLo, rootHi, d, chosenScore, chosenMove.code, 1);
+        lastIterMs = performance.now() - iterStart;
+        iterLog.push([d, Math.round(lastIterMs), searchNodes]);
         if (chosenScore > 18000) break;
         if (d === prof.depth && prof.jitter === 0 && ponderBonusNodes > 1000) {
           const elapsed = performance.now() - startTime;
@@ -1460,7 +1539,9 @@ function XiangqiEngineFactory() {
       fc: chosenMove.fc,
       tr: chosenMove.tr,
       tc: chosenMove.tc,
-      comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${(totalEvaluatedNodes / 1000).toFixed(1)}k 節點)｜評估：${scoreDesc}】`
+      comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${(totalEvaluatedNodes / 1000).toFixed(1)}k 節點)｜評估：${scoreDesc}】`,
+      // 除錯/測試用的搜尋紀錄（不顯示在畫面上）：每層 [深度, 毫秒, 累計節點]、預思考資訊
+      info: { iters: iterLog, ponderNodes: ponderBonusNodes, ponderDepth: lastPonderDepth }
     };
   }
 
@@ -1468,7 +1549,9 @@ function XiangqiEngineFactory() {
     PRESETS, AI_PROFILES, PIECE_NAMES,
     initBoard, cloneBoard, getLegalMoves, isInCheck, evaluateGameState, getNotation,
     evaluateBoard, isValidBoard, isValidRequest,
-    setGameContext, computeBestMove, startPonder, stopPonder
+    setGameContext, computeBestMove, startPonder, stopPonder,
+    // 測試用：目前預思考猜測的玩家著法（不顯示在畫面上）
+    ponderPrediction: () => (ponderState && ponderState.predicted) || null
   };
 }
 
@@ -1492,7 +1575,7 @@ function XiangqiWorkerMain(E) {
       } else if (msg.type === 'ponder') {
         if (!E.isValidRequest(msg) || (msg.aiSide !== 'R' && msg.aiSide !== 'B')) throw new Error('invalid request');
         E.setGameContext(msg.ctx);
-        E.startPonder(msg.board, msg.side, msg.aiSide, msg.level, 45);
+        E.startPonder(msg.board, msg.side, msg.aiSide, msg.level, 120);
       } else if (msg.type === 'stopPonder') {
         E.stopPonder(false);
       }

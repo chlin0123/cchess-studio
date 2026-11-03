@@ -14,7 +14,9 @@ const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const CELL = 56, OX = 46, OY = 48;
 const STORAGE_KEY = 'XIANGQI_SAVED_GAMES_V2';
+const STATS_STORAGE_KEY = 'XIANGQI_AI_STATS_V1';
 const MAX_STEPS = 500;
+const AUTO_PLAY_MS = 950;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 let flipped = false;
 let selected = null;
@@ -26,6 +28,7 @@ let aiLevel = 4;
 let aiThinking = false;
 let aiSessionId = 0;
 let hintMove = null;
+let autoPlayTimer = null;
 
 // ==================== AI 用戶端：Web Worker（失敗時退回主執行緒） ====================
 const AiClient = {
@@ -136,15 +139,138 @@ function buildGameContext() {
   };
 }
 
+// ==================== 思考計時顯示 ====================
+let thinkStartAt = 0;
+let thinkTimer = null;
+let thinkLevel = 4;
+
+function thinkingLabel() {
+  const prof = AI_PROFILES[thinkLevel] || AI_PROFILES[4];
+  const sec = Math.floor((performance.now() - thinkStartAt) / 1000);
+  const limit = Math.round(prof.timeMs / 1000);
+  return `🤖 ${prof.name} (${prof.title}) 思考中… ${sec} 秒` + (limit >= 3 ? `（上限 ${limit} 秒）` : '');
+}
+
+function startThinkingClock(level) {
+  thinkStartAt = performance.now();
+  thinkLevel = level;
+  if (thinkTimer === null) {
+    thinkTimer = setInterval(() => {
+      if (!aiThinking) { clearInterval(thinkTimer); thinkTimer = null; return; }
+      document.getElementById('turnText').textContent = thinkingLabel();
+    }, 500);
+  }
+}
+
 function stopPondering() {
   AiClient.stopPonder();
 }
 
+function getEffectiveGameState(cur) {
+  if (!cur) return { over: false, inCheck: false, winner: null, reason: '' };
+  if (cur.resigned === 'R' || cur.resigned === 'B') {
+    const winner = cur.resigned === 'R' ? 'B' : 'R';
+    const reason = cur.resigned === 'R' ? '紅方投子認輸，黑方獲勝！' : '黑方投子認輸，紅方獲勝！';
+    return { over: true, inCheck: false, winner, reason };
+  }
+  return evaluateGameState(cur.board, cur.turn);
+}
+
+// ==================== 對戰戰績統計（存於 localStorage） ====================
+function getAiStats() {
+  const safe = Object.create(null);
+  for (let lv = 1; lv <= 5; lv++) safe[lv] = { wins: 0, losses: 0 };
+  try {
+    const raw = JSON.parse(localStorage.getItem(STATS_STORAGE_KEY) || '{}');
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (let lv = 1; lv <= 5; lv++) {
+        const key = String(lv);
+        if (FORBIDDEN_KEYS.has(key)) continue;
+        const item = raw[key];
+        if (item && typeof item === 'object') {
+          const w = Number.isInteger(item.wins) && item.wins >= 0 && item.wins <= 1000000 ? item.wins : 0;
+          const l = Number.isInteger(item.losses) && item.losses >= 0 && item.losses <= 1000000 ? item.losses : 0;
+          safe[lv] = { wins: w, losses: l };
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return safe;
+}
+
+function recordAiGameResult(level, isPlayerWin) {
+  if (![1, 2, 3, 4, 5].includes(level)) return;
+  const stats = getAiStats();
+  if (isPlayerWin) stats[level].wins += 1;
+  else stats[level].losses += 1;
+  try {
+    localStorage.setItem(STATS_STORAGE_KEY, JSON.stringify(stats));
+  } catch (e) { /* ignore */ }
+}
+
+function formatAiStatsText(level) {
+  const stats = getAiStats();
+  const rec = stats[level] || { wins: 0, losses: 0 };
+  const total = rec.wins + rec.losses;
+  if (total === 0) return '對戰戰績：尚無紀錄';
+  const rate = Math.round((rec.wins / total) * 100);
+  return `對戰戰績：${rec.wins} 勝 ${rec.losses} 負（勝率 ${rate}%）`;
+}
+
+// ==================== 自動播放控制 ====================
+function updateAutoPlayButton() {
+  const btn = document.getElementById('navPlay');
+  if (!btn) return;
+  if (autoPlayTimer !== null) {
+    btn.textContent = '⏸ 暫停';
+    btn.classList.add('playing');
+  } else {
+    btn.textContent = '▶ 播放';
+    btn.classList.remove('playing');
+  }
+}
+
+function stopAutoPlay() {
+  if (autoPlayTimer !== null) {
+    clearInterval(autoPlayTimer);
+    autoPlayTimer = null;
+    updateAutoPlayButton();
+  }
+}
+
+function toggleAutoPlay() {
+  if (autoPlayTimer !== null) {
+    stopAutoPlay();
+    return;
+  }
+  if (history.length <= 1) return;
+  stopPondering();
+  AiClient.cancel();
+  aiSessionId++;
+  aiThinking = false;
+  if (curStep >= history.length - 1) {
+    curStep = 0;
+    renderAll();
+  }
+  autoPlayTimer = setInterval(() => {
+    if (curStep < history.length - 1) {
+      curStep++;
+      selected = null;
+      validMoves = [];
+      hintMove = null;
+      renderAll();
+    } else {
+      stopAutoPlay();
+    }
+  }, AUTO_PLAY_MS);
+  updateAutoPlayButton();
+}
+
 function startPonderingIfNeeded() {
-  if (aiMode === 'off' || aiThinking) return;
+  if (aiMode === 'off' || aiThinking || autoPlayTimer !== null) return;
   const cur = history[curStep];
   if (!cur || cur.turn === aiMode) return;
-  if (evaluateGameState(cur.board, cur.turn).over) return;
+  if (getEffectiveGameState(cur).over) return;
   AiClient.ponder({ board: cur.board, side: cur.turn, aiSide: aiMode, level: aiLevel, ctx: buildGameContext() });
 }
 
@@ -172,6 +298,7 @@ function validateAllPresets() {
 }
 
 function resetGame(skipAiTrigger = false) {
+  stopAutoPlay();
   stopPondering();
   AiClient.cancel();
   aiSessionId++;
@@ -186,6 +313,7 @@ function resetGame(skipAiTrigger = false) {
 }
 
 function makeMove(fr, fc, tr, tc, comment = "", skipAiTrigger = false) {
+  stopAutoPlay();
   const cur = history[curStep];
   const nextB = cloneBoard(cur.board);
   const notation = getNotation(cur.board, fr, fc, tr, tc);
@@ -219,15 +347,20 @@ function formatAutoSaveTime(d) {
 function autoSaveFinishedGame() {
   const cur = history[curStep];
   if (!cur || curStep < 1) return;
-  const state = evaluateGameState(cur.board, cur.turn);
+  const state = getEffectiveGameState(cur);
   if (!state.over || (state.winner !== 'R' && state.winner !== 'B')) return;
 
   const prof = AI_PROFILES[aiLevel] || AI_PROFILES[4];
   let resultTag, opponent;
   if (aiMode === 'R' || aiMode === 'B') {
     const playerSide = aiMode === 'R' ? 'B' : 'R';
-    resultTag = state.winner === playerSide ? '勝' : '負';
+    const isPlayerWin = state.winner === playerSide;
+    resultTag = isPlayerWin ? '勝' : '負';
     opponent = `Lv.${aiLevel}${prof.name}`;
+    if (!cur.statsRecorded) {
+      cur.statsRecorded = true;
+      recordAiGameResult(aiLevel, isPlayerWin);
+    }
   } else {
     resultTag = state.winner === 'R' ? '紅勝' : '黑勝';
     opponent = '雙人';
@@ -379,16 +512,19 @@ function updateAiProfileUI() {
   const nameEl = document.getElementById('aiProfileName');
   const badgeEl = document.getElementById('aiProfileBadge');
   const bioEl = document.getElementById('aiProfileBio');
+  const statsEl = document.getElementById('aiProfileStats');
   if (nameEl) nameEl.textContent = `對手：${prof.name}（${prof.title}）`;
   if (badgeEl) badgeEl.textContent = prof.badge;
   if (bioEl) bioEl.textContent = prof.bio;
+  if (statsEl) statsEl.textContent = formatAiStatsText(aiLevel);
 }
 
 function renderAll() {
   drawBoard();
   updateAiProfileUI();
+  updateAutoPlayButton();
   const cur = history[curStep];
-  const state = evaluateGameState(cur.board, cur.turn);
+  const state = getEffectiveGameState(cur);
   const statusBar = document.getElementById('statusBar');
   const turnText = document.getElementById('turnText');
   const prof = AI_PROFILES[aiLevel] || AI_PROFILES[4];
@@ -401,7 +537,7 @@ function renderAll() {
   } else if (aiThinking) {
     statusBar.classList.remove('gameover');
     statusBar.classList.add('thinking');
-    turnText.textContent = `🤖 ${prof.name} (${prof.title}) 思考中...`;
+    turnText.textContent = thinkingLabel();
   } else {
     statusBar.classList.remove('gameover', 'thinking');
     if (hintMove) {
@@ -442,9 +578,10 @@ function renderAll() {
 
 canvas.addEventListener('click', e => {
   if (aiThinking) return;
+  stopAutoPlay();
   const cur = history[curStep];
   if (aiMode === cur.turn) return;
-  const state = evaluateGameState(cur.board, cur.turn);
+  const state = getEffectiveGameState(cur);
   if (state.over) return;
 
   const rect = canvas.getBoundingClientRect();
@@ -474,6 +611,7 @@ canvas.addEventListener('click', e => {
 
 function goStep(s) {
   if (s < 0 || s >= history.length) return;
+  stopAutoPlay();
   stopPondering();
   AiClient.cancel();
   aiSessionId++;
@@ -487,6 +625,7 @@ function goStep(s) {
 }
 function undoMove() {
   if (curStep <= 0) return;
+  stopAutoPlay();
   stopPondering();
   AiClient.cancel();
   aiSessionId++;
@@ -502,7 +641,63 @@ function undoMove() {
 function flipBoard() { flipped = !flipped; drawBoard(); }
 function saveComment() { history[curStep].comment = document.getElementById('commentInput').value.slice(0, 2000); }
 
+function resignGame() {
+  stopAutoPlay();
+  const cur = history[curStep];
+  if (!cur) return;
+  if (curStep < 1) {
+    alert('尚未落子，無須認輸！');
+    return;
+  }
+  if (getEffectiveGameState(cur).over) {
+    alert('本局已經結束！');
+    return;
+  }
+  if (!confirm('確定要投子認輸嗎？（本局將自動存入您的棋譜庫）')) return;
+  stopPondering();
+  AiClient.cancel();
+  aiSessionId++;
+  aiThinking = false;
+  hintMove = null;
+  selected = null;
+  validMoves = [];
+  const resignSide = (aiMode === 'R') ? 'B' : (aiMode === 'B' ? 'R' : cur.turn);
+  cur.resigned = resignSide;
+  autoSaveFinishedGame();
+  renderAll();
+}
+
+function takeoverFromCurrentPosition() {
+  stopAutoPlay();
+  stopPondering();
+  AiClient.cancel();
+  aiSessionId++;
+  aiThinking = false;
+  hintMove = null;
+  selected = null;
+  validMoves = [];
+  const cur = history[curStep];
+  if (!cur) return;
+  if (evaluateGameState(cur.board, cur.turn).over) {
+    alert('此盤面已是終局，請先切換到先前的步數再點擊「從此續戰」！');
+    return;
+  }
+  delete cur.resigned;
+  delete cur.autoSavedTitle;
+  delete cur.autoSaveFailed;
+  delete cur.statsRecorded;
+  history = history.slice(0, curStep + 1);
+  if (aiMode === 'off') {
+    aiMode = cur.turn === 'R' ? 'B' : 'R';
+    const modeSel = document.getElementById('aiModeSelect');
+    if (modeSel) modeSel.value = aiMode;
+  }
+  renderAll();
+  maybeTriggerAi();
+}
+
 function onAiConfigChange() {
+  stopAutoPlay();
   stopPondering();
   AiClient.cancel();
   const modeVal = document.getElementById('aiModeSelect').value;
@@ -538,7 +733,7 @@ function maybeTriggerAi() {
   }
   const cur = history[curStep];
   if (!cur) return;
-  const state = evaluateGameState(cur.board, cur.turn);
+  const state = getEffectiveGameState(cur);
   if (state.over) {
     stopPondering();
     return;
@@ -552,6 +747,7 @@ function maybeTriggerAi() {
   const session = ++aiSessionId;
   const stepAtRequest = curStep;
   aiThinking = true;
+  startThinkingClock(aiLevel);
   renderAll();
 
   AiClient.think({ board: cur.board, side: cur.turn, level: aiLevel, ctx: buildGameContext() }, best => {
@@ -568,8 +764,9 @@ function maybeTriggerAi() {
 
 function requestAiHint() {
   if (aiThinking) return;
+  stopAutoPlay();
   const cur = history[curStep];
-  const state = evaluateGameState(cur.board, cur.turn);
+  const state = getEffectiveGameState(cur);
   if (state.over) return;
 
   if (hintMove) {
@@ -582,11 +779,14 @@ function requestAiHint() {
   }
 
   // 不先停止預思考：Worker 收到 think 時會自行停止並保留預思考成果
+  // 支招固定用 Lv.3 的算力（每步最多 6 秒），避免玩家等太久
+  const HINT_LEVEL = 3;
   const session = ++aiSessionId;
   const stepAtRequest = curStep;
   aiThinking = true;
+  startThinkingClock(HINT_LEVEL);
   renderAll();
-  AiClient.think({ board: cur.board, side: cur.turn, level: Math.max(aiLevel, 4), ctx: buildGameContext() }, best => {
+  AiClient.think({ board: cur.board, side: cur.turn, level: HINT_LEVEL, ctx: buildGameContext() }, best => {
     if (session !== aiSessionId || curStep !== stepAtRequest) return;
     aiThinking = false;
     const latest = history[curStep];
@@ -805,9 +1005,12 @@ function importJSON() {
 }
 
 window.addEventListener('keydown', e => {
-  if (['TEXTAREA', 'INPUT'].includes(document.activeElement.tagName)) return;
+  if (['TEXTAREA', 'INPUT', 'SELECT'].includes(document.activeElement.tagName)) return;
   if (e.key === 'ArrowLeft') goStep(curStep - 1);
-  if (e.key === 'ArrowRight') goStep(curStep + 1);
+  else if (e.key === 'ArrowRight') goStep(curStep + 1);
+  else if (e.key === 'Home') { e.preventDefault(); goStep(0); }
+  else if (e.key === 'End') { e.preventDefault(); goStep(history.length - 1); }
+  else if (e.key === ' ') { e.preventDefault(); toggleAutoPlay(); }
 });
 
 // ==================== 事件綁定（取代 HTML 內嵌 onclick，以符合嚴格 CSP） ====================
@@ -818,15 +1021,18 @@ function bind(id, eventName, handler) {
 bind('btnReset', 'click', () => resetGame());
 bind('btnFlip', 'click', flipBoard);
 bind('btnUndo', 'click', undoMove);
+bind('btnResign', 'click', resignGame);
 bind('btnSave', 'click', saveCurrentRecord);
 bind('btnIO', 'click', openModal);
 bind('aiModeSelect', 'change', onAiConfigChange);
 bind('aiLevelSelect', 'change', onAiConfigChange);
 bind('aiHintBtn', 'click', requestAiHint);
+bind('btnTakeover', 'click', takeoverFromCurrentPosition);
 bind('savedSelect', 'change', loadSavedRecord);
 bind('btnDeleteSave', 'click', deleteSavedRecord);
 bind('navFirst', 'click', () => goStep(0));
 bind('navPrev', 'click', () => goStep(curStep - 1));
+bind('navPlay', 'click', toggleAutoPlay);
 bind('navNext', 'click', () => goStep(curStep + 1));
 bind('navLast', 'click', () => goStep(history.length - 1));
 bind('commentInput', 'input', saveComment);

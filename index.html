@@ -26,6 +26,7 @@
     <button id="btnReset">新局復原</button>
     <button id="btnFlip">翻轉棋盤</button>
     <button id="btnUndo">悔棋</button>
+    <button id="btnResign" title="投子認輸並自動存檔">認輸</button>
     <button class="primary" id="btnSave">儲存打譜</button>
     <button id="btnIO">匯出 / 載入</button>
   </div>
@@ -55,6 +56,7 @@
         <option value="5">Lv.5 天璣玄極 (深算棋神・16層)</option>
       </select>
       <button id="aiHintBtn" title="請 AI 分析當前盤面並推薦最佳著法（再點一次可直接代走）">AI 支招</button>
+      <button id="btnTakeover" title="從目前局面截斷後續步數，直接與 AI 續戰對弈">從此續戰</button>
     </div>
 
     <div class="ai-profile" id="aiProfileCard">
@@ -63,6 +65,9 @@
         <span class="ai-profile-tag" id="aiProfileBadge">Lv.4｜14 層算力</span>
       </div>
       <div class="ai-profile-bio" id="aiProfileBio">殿堂級特級大師，深諳九宮氣數與子力協同。對臥槽馬、鐵門栓與悶宮殺機有極致嗅覺。</div>
+      <div class="ai-profile-foot">
+        <span id="aiProfileStats">對戰戰績：尚無紀錄</span>
+      </div>
     </div>
 
     <div class="save-bar">
@@ -73,10 +78,11 @@
     </div>
 
     <div class="nav-btns">
-      <button id="navFirst" title="開局">|&lt;</button>
+      <button id="navFirst" title="開局 (Home)">|&lt;</button>
       <button id="navPrev" title="上一步 (←)">&lt;</button>
+      <button id="navPlay" title="自動播放 / 暫停棋譜 (空白鍵)">▶ 播放</button>
       <button id="navNext" title="下一步 (→)">&gt;</button>
-      <button id="navLast" title="終局">&gt;|</button>
+      <button id="navLast" title="終局 (End)">&gt;|</button>
     </div>
     <div class="move-list" id="moveList"></div>
     <div class="comment-box">
