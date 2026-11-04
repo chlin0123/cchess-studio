@@ -433,36 +433,36 @@ function XiangqiEngineFactory() {
     1: {
       name: '林小軒',
       title: '街頭棋童',
-      badge: 'Lv.1｜4 層',
-      depth: 4, useTactics: true, qMax: 3, jitter: 6, timeMs: 350,
+      badge: 'Lv.1｜6 層',
+      depth: 6, useTactics: true, qMax: 4, jitter: 6, timeMs: 600,
       bio: '巷口雜貨店十一歲神童，酷愛快攻飛刀與當頭炮猛衝。攻勢凌厲但偶爾忽略後防空隙。'
     },
     2: {
       name: '陳鐵山',
       title: '公園擂台主',
-      badge: 'Lv.2｜6 層',
-      depth: 6, useTactics: true, qMax: 6, jitter: 0, timeMs: 700,
+      badge: 'Lv.2｜8 層',
+      depth: 8, useTactics: true, qMax: 6, jitter: 0, timeMs: 1200,
       bio: '縱橫榕樹下三十年的快棋霸主，精通屏風馬與馬炮殘局，棄子搶攻毫不手軟。'
     },
     3: {
       name: '沈滄海',
       title: '省冠國手',
-      badge: 'Lv.3｜8 層・上限 1.5 秒',
-      depth: 8, useTactics: true, qMax: 8, jitter: 0, timeMs: 1500,
+      badge: 'Lv.3｜10 層・上限 2.5 秒',
+      depth: 10, useTactics: true, qMax: 8, jitter: 0, timeMs: 2500,
       bio: '沉穩內斂的省賽冠軍國手，開局雙車出動極快，中盤陣型厚實、攻守如淵。'
     },
     4: {
       name: '顧千帆',
       title: '特級宗師',
-      badge: 'Lv.4｜9 層・上限 2.5 秒',
-      depth: 9, useTactics: true, qMax: 10, jitter: 0, timeMs: 2500,
+      badge: 'Lv.4｜11 層・上限 4 秒',
+      depth: 11, useTactics: true, qMax: 10, jitter: 0, timeMs: 4000,
       bio: '殿堂級特級大師，深諳九宮氣數與子力協同。對臥槽馬、鐵門栓與悶宮殺機有極致嗅覺。'
     },
     5: {
       name: '天璣玄極',
       title: '深算棋神',
-      badge: 'Lv.5｜10 層・上限 3.8 秒',
-      depth: 10, useTactics: true, qMax: 12, jitter: 0, timeMs: 3800,
+      badge: 'Lv.5｜12 層・上限 6 秒',
+      depth: 12, useTactics: true, qMax: 12, jitter: 0, timeMs: 6000,
       bio: '融合大型置換表與將軍延伸的終極引擎。算度深不可測，任何微小破綻皆化為絕殺。'
     }
   };
