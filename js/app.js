@@ -120,7 +120,15 @@ const AiClient = {
       this.worker.postMessage({ ...full, id: 0 });
     } else if (this.local) {
       this.local.setGameContext(req.ctx);
-      this.local.startPonder(req.board, req.side, req.aiSide, req.level, 18);
+      this.local.startPonder(req.board, req.side, req.aiSide, req.level, 40);
+    }
+  },
+
+  focusPiece(fr, fc) {
+    if (this.worker) {
+      this.worker.postMessage({ type: 'focusPiece', fr, fc, id: 0 });
+    } else if (this.local) {
+      this.local.focusPonderPiece(fr, fc);
     }
   },
 
@@ -602,6 +610,10 @@ canvas.addEventListener('click', e => {
   if (p && p.s === cur.turn) {
     selected = [r, c];
     validMoves = getLegalMoves(cur.board, r, c);
+    if (validMoves.length > 0 && aiMode !== 'off' && cur.turn !== aiMode) {
+      startPonderingIfNeeded();
+      AiClient.focusPiece(r, c);
+    }
   } else {
     selected = null;
     validMoves = [];

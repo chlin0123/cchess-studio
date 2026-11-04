@@ -433,36 +433,36 @@ function XiangqiEngineFactory() {
     1: {
       name: '林小軒',
       title: '街頭棋童',
-      badge: 'Lv.1｜5 層',
-      depth: 5, useTactics: true, qMax: 3, jitter: 6, timeMs: 450,
+      badge: 'Lv.1｜4 層',
+      depth: 4, useTactics: true, qMax: 3, jitter: 6, timeMs: 350,
       bio: '巷口雜貨店十一歲神童，酷愛快攻飛刀與當頭炮猛衝。攻勢凌厲但偶爾忽略後防空隙。'
     },
     2: {
       name: '陳鐵山',
       title: '公園擂台主',
-      badge: 'Lv.2｜8 層',
-      depth: 8, useTactics: true, qMax: 6, jitter: 0, timeMs: 1100,
+      badge: 'Lv.2｜6 層',
+      depth: 6, useTactics: true, qMax: 6, jitter: 0, timeMs: 700,
       bio: '縱橫榕樹下三十年的快棋霸主，精通屏風馬與馬炮殘局，棄子搶攻毫不手軟。'
     },
     3: {
       name: '沈滄海',
       title: '省冠國手',
-      badge: 'Lv.3｜目標 12 層・每步最多 6 秒',
-      depth: 12, useTactics: true, qMax: 10, jitter: 0, timeMs: 6000,
+      badge: 'Lv.3｜8 層・上限 1.5 秒',
+      depth: 8, useTactics: true, qMax: 8, jitter: 0, timeMs: 1500,
       bio: '沉穩內斂的省賽冠軍國手，開局雙車出動極快，中盤陣型厚實、攻守如淵。'
     },
     4: {
       name: '顧千帆',
       title: '特級宗師',
-      badge: 'Lv.4｜目標 14 層・每步最多 12 秒',
-      depth: 14, useTactics: true, qMax: 12, jitter: 0, timeMs: 12000,
+      badge: 'Lv.4｜9 層・上限 2.5 秒',
+      depth: 9, useTactics: true, qMax: 10, jitter: 0, timeMs: 2500,
       bio: '殿堂級特級大師，深諳九宮氣數與子力協同。對臥槽馬、鐵門栓與悶宮殺機有極致嗅覺。'
     },
     5: {
       name: '天璣玄極',
       title: '深算棋神',
-      badge: 'Lv.5｜目標 16 層・每步最多 20 秒',
-      depth: 16, useTactics: true, qMax: 14, jitter: 0, timeMs: 20000,
+      badge: 'Lv.5｜10 層・上限 3.8 秒',
+      depth: 10, useTactics: true, qMax: 12, jitter: 0, timeMs: 3800,
       bio: '融合大型置換表與將軍延伸的終極引擎。算度深不可測，任何微小破綻皆化為絕殺。'
     }
   };
@@ -1166,6 +1166,7 @@ function XiangqiEngineFactory() {
   let ponderTimer = null;
   let ponderState = null;
   let lastCompletedPonder = null;
+  const ponderResults = new Map(); // key: `${lo}_${hi}` -> { depth, move, score, moveScores }
 
   function stopPonder(preserveForNextTurn = false) {
     if (ponderTimer !== null) {
@@ -1180,21 +1181,69 @@ function XiangqiEngineFactory() {
       };
     } else if (!preserveForNextTurn) {
       lastCompletedPonder = null;
+      ponderResults.clear();
     }
     ponderState = null;
   }
 
-  function startPonder(board, humanSide, aiSide, level, sliceMs = 18) {
-    stopPonder(false);
-    if (!isValidBoard(board) || humanSide === aiSide) return;
+  function buildCandidateLine(baseBoard, humanMove, aiSide, humanSide, baseHashSet, parentLo, maxDepth) {
+    const board = baseBoard.map(row => row.slice());
+    board[humanMove.tr][humanMove.tc] = board[humanMove.fr][humanMove.fc];
+    board[humanMove.fr][humanMove.fc] = null;
+    const [lo, hi] = computeBoardHash(board, aiSide);
+    const idx = ttProbe(lo, hi);
+    const moves = getAllLegalMoves(board, aiSide, false, idx >= 0 ? ttBestMove[idx] : 0);
+    if (moves.length === 0) return null;
+    const hs = new Set(baseHashSet);
+    hs.add(parentLo);
+    return {
+      key: `${lo}_${hi}`,
+      predicted: { fr: humanMove.fr, fc: humanMove.fc, tr: humanMove.tr, tc: humanMove.tc },
+      side: aiSide,
+      oppSide: humanSide,
+      workBoard: board,
+      rootLo: lo,
+      rootHi: hi,
+      rootMoves: moves,
+      ponderHashSet: hs,
+      d: 2,
+      maxDepth,
+      moveIdx: 0,
+      alpha: -SEARCH_INF,
+      beta: SEARCH_INF,
+      iterBestMove: moves[0],
+      iterBestScore: -Infinity,
+      reachedDepth: 1,
+      done: false
+    };
+  }
+
+  function startPonder(board, humanSide, aiSide, level, sliceMs = 40) {
+    if (!isValidBoard(board) || humanSide === aiSide) {
+      stopPonder(false);
+      return;
+    }
     const state = evaluateGameState(board, humanSide);
-    if (state.over) return;
+    if (state.over) {
+      stopPonder(false);
+      return;
+    }
     ensureTT();
 
     const aiLevel = level;
     const prof = AI_PROFILES[aiLevel] || AI_PROFILES[4];
     const workBoard = sanitizeBoard(board);
     const [rootLo, rootHi] = computeBoardHash(workBoard, humanSide);
+
+    // 若已經對同一個盤面與難度正在預思考，直接繼續不重設
+    if (ponderState && ponderState.baseLo === rootLo && ponderState.baseHi === rootHi && ponderState.prof === prof) {
+      if (!ponderState.done && ponderTimer === null) {
+        ponderTimer = setTimeout(runPonderSlice, 5);
+      }
+      return;
+    }
+
+    stopPonder(false);
     ttNewGeneration();
     const rootTtIdx = ttProbe(rootLo, rootHi);
     const rootTtMove = rootTtIdx >= 0 ? ttBestMove[rootTtIdx] : 0;
@@ -1207,13 +1256,20 @@ function XiangqiEngineFactory() {
       ponderHashSet.add(hLo);
     }
 
-    const maxDepth = aiLevel === 1 ? 5 : Math.min(18, prof.depth + 2);
+    const maxDepth = prof.depth;
     ponderState = {
       step: ctxStep,
+      baseBoard: workBoard.map(row => row.slice()),
+      baseLo: rootLo,
+      baseHi: rootHi,
+      humanSide,
+      realAiSide: aiSide,
+      humanMoves: rootMoves,
+      baseHashSet: new Set(ponderHashSet),
       side: humanSide,
       aiSide,
-      sliceMs: Math.max(5, Math.min(200, sliceMs | 0)),
-      maxRetries: Math.max(35, Math.ceil(15000 / Math.max(5, Math.min(200, sliceMs | 0)))),
+      sliceMs: Math.max(10, Math.min(80, sliceMs | 0)),
+      maxRetries: 120,
       prof,
       workBoard,
       rootLo,
@@ -1231,50 +1287,139 @@ function XiangqiEngineFactory() {
       totalNodes: 0,
       sliceRetries: 0,
       phase: 1,
-      phase1Depth: Math.min(9, prof.depth),
+      phase1Depth: Math.min(4, prof.depth),
+      candidates: [],
+      candIdx: 0,
       done: false
     };
-    ponderTimer = setTimeout(runPonderSlice, 30);
+    ponderTimer = setTimeout(runPonderSlice, 10);
+  }
+
+  function loadCandidateIntoPonderState(ps, cand) {
+    ps.predicted = cand.predicted;
+    ps.side = cand.side;
+    ps.aiSide = cand.oppSide;
+    ps.workBoard = cand.workBoard;
+    ps.rootLo = cand.rootLo;
+    ps.rootHi = cand.rootHi;
+    ps.rootMoves = cand.rootMoves;
+    ps.ponderHashSet = cand.ponderHashSet;
+    ps.d = cand.d;
+    ps.maxDepth = cand.maxDepth;
+    ps.moveIdx = cand.moveIdx;
+    ps.alpha = cand.alpha;
+    ps.beta = cand.beta;
+    ps.iterBestMove = cand.iterBestMove;
+    ps.iterBestScore = cand.iterBestScore;
+    ps.sliceRetries = 0;
   }
 
   /**
-   * 預思考第二階段：第一階段已用全寬搜尋找出玩家最可能的著法後，
-   * 假設玩家就走這步，改從 AI 的角度對該局面做深度迭代搜尋。
-   * 玩家若真的走這步（猜中），AI 輪到時可直接沿用已算好的深層結果；
-   * 沒猜中時，第一階段留在置換表裡的資訊仍然有幫助。
+   * 預思考第二階段：第一階段已快速（4 層）找出玩家最可能的前幾步著法，
+   * 建立前 4 個候選分支，輪流從 AI 視角深入搜尋至目標層數，並將完成的根結果存入 ponderResults。
    */
   function enterPredictedLine() {
     const ps = ponderState;
-    const m = ps.rootMoves[0];
-    const board = ps.workBoard.map(row => row.slice());
-    board[m.tr][m.tc] = board[m.fr][m.fc];
-    board[m.fr][m.fc] = null;
-    const childSide = ps.aiSide;
-    const [lo, hi] = computeBoardHash(board, childSide);
-    const idx = ttProbe(lo, hi);
-    const moves = getAllLegalMoves(board, childSide, false, idx >= 0 ? ttBestMove[idx] : 0);
-    if (moves.length === 0) { ps.done = true; return; }
-    const hs = new Set(ps.ponderHashSet);
-    hs.add(ps.rootLo);
-    Object.assign(ps, {
-      phase: 2,
-      predicted: { fr: m.fr, fc: m.fc, tr: m.tr, tc: m.tc },
-      side: childSide,
-      aiSide: ps.side,          // 第二階段的「對手」是玩家
-      workBoard: board,
-      rootLo: lo,
-      rootHi: hi,
-      rootMoves: moves,
-      ponderHashSet: hs,
-      d: 2,
-      maxDepth: Math.min(18, ps.prof.depth + 1),
-      moveIdx: 0,
-      alpha: -SEARCH_INF,
-      beta: SEARCH_INF,
-      iterBestMove: moves[0],
-      iterBestScore: -Infinity,
-      sliceRetries: 0
-    });
+    const cands = [];
+    const limit = Math.min(4, ps.humanMoves.length);
+    for (let i = 0; i < limit; i++) {
+      const c = buildCandidateLine(
+        ps.baseBoard, ps.humanMoves[i], ps.realAiSide, ps.humanSide,
+        ps.baseHashSet, ps.baseLo, ps.prof.depth
+      );
+      if (c) cands.push(c);
+    }
+    if (cands.length === 0) { ps.done = true; return; }
+    ps.phase = 2;
+    ps.candidates = cands;
+    ps.candIdx = 0;
+    loadCandidateIntoPonderState(ps, cands[0]);
+  }
+
+  /**
+   * 當玩家在棋盤上點選某顆己方棋子 (fr, fc) 準備落子時，
+   * 立即將該棋子最優的 2 個合法走法排入預思考候選隊列最前端！
+   */
+  function focusPonderPiece(fr, fc) {
+    const ps = ponderState;
+    if (!ps || !Number.isInteger(fr) || !Number.isInteger(fc)) return;
+    const pieceMoves = ps.humanMoves.filter(m => m.fr === fr && m.fc === fc).slice(0, 2);
+    if (pieceMoves.length === 0) return;
+
+    if (ps.phase === 1) {
+      // 將該棋子的走法排到 humanMoves 最前面，第一階段結束時優先進入
+      const rest = ps.humanMoves.filter(m => !(m.fr === fr && m.fc === fc));
+      ps.humanMoves = [...pieceMoves, ...rest];
+      return;
+    }
+
+    // 已在第二階段：先把目前正在算的候選進度存回物件
+    const curCand = ps.candidates[ps.candIdx];
+    if (curCand) {
+      curCand.d = ps.d;
+      curCand.moveIdx = ps.moveIdx;
+      curCand.alpha = ps.alpha;
+      curCand.beta = ps.beta;
+      curCand.iterBestMove = ps.iterBestMove;
+      curCand.iterBestScore = ps.iterBestScore;
+    }
+
+    for (let i = pieceMoves.length - 1; i >= 0; i--) {
+      const pm = pieceMoves[i];
+      let existingIdx = ps.candidates.findIndex(
+        c => c.predicted.fr === pm.fr && c.predicted.fc === pm.fc && c.predicted.tr === pm.tr && c.predicted.tc === pm.tc
+      );
+      let cand;
+      if (existingIdx >= 0) {
+        cand = ps.candidates.splice(existingIdx, 1)[0];
+      } else {
+        cand = buildCandidateLine(
+          ps.baseBoard, pm, ps.realAiSide, ps.humanSide,
+          ps.baseHashSet, ps.baseLo, ps.prof.depth
+        );
+      }
+      if (cand) ps.candidates.unshift(cand);
+    }
+
+    const nextIdx = ps.candidates.findIndex(c => !c.done);
+    if (nextIdx >= 0) {
+      ps.candIdx = nextIdx;
+      ps.done = false;
+      loadCandidateIntoPonderState(ps, ps.candidates[nextIdx]);
+      if (ponderTimer === null) {
+        ponderTimer = setTimeout(runPonderSlice, 5);
+      }
+    }
+  }
+
+  function advancePonderCandidate(ps) {
+    const cur = ps.candidates[ps.candIdx];
+    if (cur) {
+      cur.reachedDepth = ps.reachedDepth;
+      cur.d = ps.d;
+      cur.moveIdx = ps.moveIdx;
+      cur.alpha = ps.alpha;
+      cur.beta = ps.beta;
+      cur.iterBestMove = ps.iterBestMove;
+      cur.iterBestScore = ps.iterBestScore;
+    }
+    // 優先把前 2 個最可能的玩家著法（或玩家剛點選的棋子著法）算到目標層數，其餘候選分支也輪流加深
+    let bestNext = -1;
+    for (let idx = 0; idx < ps.candidates.length; idx++) {
+      const c = ps.candidates[idx];
+      if (c.done) continue;
+      if (bestNext === -1) { bestNext = idx; continue; }
+      const prev = ps.candidates[bestNext];
+      const cPriority = idx < 2 ? c.d : c.d + 2;
+      const pPriority = bestNext < 2 ? prev.d : prev.d + 2;
+      if (cPriority < pPriority) bestNext = idx;
+    }
+    if (bestNext === -1) {
+      ps.done = true;
+      return;
+    }
+    ps.candIdx = bestNext;
+    loadCandidateIntoPonderState(ps, ps.candidates[bestNext]);
   }
 
   function runPonderSlice() {
@@ -1283,14 +1428,14 @@ function XiangqiEngineFactory() {
       return;
     }
 
-    gameHashSet = ponderState.ponderHashSet;
-    pathHashLo[0] = ponderState.rootLo;
     searchNodes = 0;
     searchAborted = false;
-    const sliceDeadline = performance.now() + ponderState.sliceMs; // 每次只占用一小段時間切片，讓新指令（或主執行緒畫面）能及時插入
-    const { workBoard, rootMoves, prof, rootLo, rootHi, aiSide } = ponderState;
+    const sliceDeadline = performance.now() + ponderState.sliceMs;
 
-    while (ponderState.d <= ponderState.maxDepth) {
+    while (!ponderState.done && ponderState.d <= ponderState.maxDepth) {
+      gameHashSet = ponderState.ponderHashSet;
+      pathHashLo[0] = ponderState.rootLo;
+      const { workBoard, rootMoves, prof, rootLo, rootHi, aiSide } = ponderState;
       const d = ponderState.d;
       const i = ponderState.moveIdx;
       const m = rootMoves[i];
@@ -1312,7 +1457,7 @@ function XiangqiEngineFactory() {
       }
 
       let score;
-      if (i < 3) {
+      if (i < 2) {
         score = -negamax(
           workBoard, d - 1, -SEARCH_INF, SEARCH_INF, aiSide, 1,
           nextLo, nextHi, true, prof.useTactics, prof.qMax, sliceDeadline, givesCheck
@@ -1360,20 +1505,50 @@ function XiangqiEngineFactory() {
         const bestHm = rootMoves[0];
         ttStore(rootLo, rootHi, d, ponderState.iterBestScore, bestHm.code, 1);
 
-        if (ponderState.phase === 1 && d >= ponderState.phase1Depth && Math.abs(ponderState.iterBestScore) <= MATE_BOUND) {
-          enterPredictedLine();
-          break;   // 下一個時間切片從新的根局面開始
+        if (ponderState.phase === 1) {
+          if (d >= ponderState.phase1Depth && Math.abs(ponderState.iterBestScore) <= MATE_BOUND) {
+            enterPredictedLine();
+            break;
+          }
+          if (Math.abs(ponderState.iterBestScore) > 18000 || d >= ponderState.maxDepth) {
+            ponderState.done = true;
+            break;
+          }
+          ponderState.d++;
+          ponderState.moveIdx = 0;
+          ponderState.alpha = -SEARCH_INF;
+          ponderState.beta = SEARCH_INF;
+          ponderState.iterBestMove = rootMoves[0];
+          ponderState.iterBestScore = -Infinity;
+        } else {
+          // 第二階段：儲存此預測盤面的完整根搜尋成果到 ponderResults
+          const key = `${rootLo}_${rootHi}`;
+          const moveScores = new Map();
+          for (let k = 0; k < rootMoves.length; k++) {
+            if (rootMoves[k].lastScore !== undefined) {
+              moveScores.set(rootMoves[k].code, rootMoves[k].lastScore);
+            }
+          }
+          ponderResults.set(key, {
+            depth: d,
+            move: { fr: bestHm.fr, fc: bestHm.fc, tr: bestHm.tr, tc: bestHm.tc },
+            score: ponderState.iterBestScore,
+            moveScores
+          });
+
+          const curCand = ponderState.candidates[ponderState.candIdx];
+          if (Math.abs(ponderState.iterBestScore) > 18000 || d >= ponderState.maxDepth) {
+            if (curCand) curCand.done = true;
+          } else {
+            ponderState.d++;
+            ponderState.moveIdx = 0;
+            ponderState.alpha = -SEARCH_INF;
+            ponderState.beta = SEARCH_INF;
+            ponderState.iterBestMove = rootMoves[0];
+            ponderState.iterBestScore = -Infinity;
+          }
+          advancePonderCandidate(ponderState);
         }
-        if (Math.abs(ponderState.iterBestScore) > 18000 || d >= ponderState.maxDepth) {
-          ponderState.done = true;
-          break;
-        }
-        ponderState.d++;
-        ponderState.moveIdx = 0;
-        ponderState.alpha = -SEARCH_INF;
-        ponderState.beta = SEARCH_INF;
-        ponderState.iterBestMove = rootMoves[0];
-        ponderState.iterBestScore = -Infinity;
       }
 
       if (performance.now() >= sliceDeadline) break;
@@ -1413,6 +1588,11 @@ function XiangqiEngineFactory() {
     lastCompletedPonder = null;
     if (ponderBonusNodes === 0) ttNewGeneration();
 
+    // 檢查背景預思考是否已針對目前盤面完成部分或全部深度的搜尋
+    const rootKey = `${rootLo}_${rootHi}`;
+    const cachedPonder = prof.jitter === 0 ? ponderResults.get(rootKey) : null;
+    ponderResults.clear();
+
     searchNodes = 0;
     searchAborted = false;
     killerMove1.fill(0);
@@ -1432,11 +1612,25 @@ function XiangqiEngineFactory() {
     let chosenMove = rootMoves[0];
     let chosenScore = (hasRootTt && ttFlag[rootTtIdx] === 1) ? ttScore[rootTtIdx] : -Infinity;
     let reachedDepth = (hasRootTt && ttFlag[rootTtIdx] === 1) ? Math.min(prof.depth, ttDepth[rootTtIdx]) : 1;
+    let startDepth = 2;
+
+    if (cachedPonder && cachedPonder.depth >= 2) {
+      for (let i = 0; i < rootMoves.length; i++) {
+        const sc = cachedPonder.moveScores.get(rootMoves[i].code);
+        if (sc !== undefined) rootMoves[i].lastScore = sc;
+      }
+      rootMoves.sort((a, b) => (b.lastScore ?? -999999) - (a.lastScore ?? -999999));
+      chosenMove = rootMoves[0];
+      chosenScore = cachedPonder.score;
+      reachedDepth = Math.min(prof.depth, cachedPonder.depth);
+      startDepth = cachedPonder.depth + 1;
+    }
+
     let maxTargetDepth = prof.depth;
     let lastIterMs = 0;
     const iterLog = [];
 
-    for (let d = 2; d <= maxTargetDepth; d++) {
+    for (let d = startDepth; d <= maxTargetDepth; d++) {
       let alpha = -SEARCH_INF, beta = SEARCH_INF;
       let iterBestMove = rootMoves[0];
       let iterBestScore = -Infinity;
@@ -1512,11 +1706,6 @@ function XiangqiEngineFactory() {
         lastIterMs = performance.now() - iterStart;
         iterLog.push([d, Math.round(lastIterMs), searchNodes]);
         if (chosenScore > 18000) break;
-        if (d === prof.depth && prof.jitter === 0 && ponderBonusNodes > 1000) {
-          const elapsed = performance.now() - startTime;
-          if (elapsed < prof.timeMs * 0.25) maxTargetDepth = Math.min(18, prof.depth + 2);
-          else if (elapsed < prof.timeMs * 0.5) maxTargetDepth = Math.min(18, prof.depth + 1);
-        }
       } else {
         if (iterBestMove !== rootMoves[0] && rootMoves[0].lastScore !== undefined && iterBestScore > rootMoves[0].lastScore) {
           chosenMove = iterBestMove;
@@ -1541,7 +1730,7 @@ function XiangqiEngineFactory() {
       tc: chosenMove.tc,
       comment: `【${prof.name} (${prof.title})・算深 ${reachedDepth} 層 (${(totalEvaluatedNodes / 1000).toFixed(1)}k 節點)｜評估：${scoreDesc}】`,
       // 除錯/測試用的搜尋紀錄（不顯示在畫面上）：每層 [深度, 毫秒, 累計節點]、預思考資訊
-      info: { iters: iterLog, ponderNodes: ponderBonusNodes, ponderDepth: lastPonderDepth }
+      info: { iters: iterLog, ponderNodes: ponderBonusNodes, ponderDepth: lastPonderDepth, ponderHitDepth: cachedPonder ? cachedPonder.depth : 0 }
     };
   }
 
@@ -1549,7 +1738,7 @@ function XiangqiEngineFactory() {
     PRESETS, AI_PROFILES, PIECE_NAMES,
     initBoard, cloneBoard, getLegalMoves, isInCheck, evaluateGameState, getNotation,
     evaluateBoard, isValidBoard, isValidRequest,
-    setGameContext, computeBestMove, startPonder, stopPonder,
+    setGameContext, computeBestMove, startPonder, stopPonder, focusPonderPiece,
     // 測試用：目前預思考猜測的玩家著法（不顯示在畫面上）
     ponderPrediction: () => (ponderState && ponderState.predicted) || null
   };
@@ -1575,7 +1764,11 @@ function XiangqiWorkerMain(E) {
       } else if (msg.type === 'ponder') {
         if (!E.isValidRequest(msg) || (msg.aiSide !== 'R' && msg.aiSide !== 'B')) throw new Error('invalid request');
         E.setGameContext(msg.ctx);
-        E.startPonder(msg.board, msg.side, msg.aiSide, msg.level, 120);
+        E.startPonder(msg.board, msg.side, msg.aiSide, msg.level, 40);
+      } else if (msg.type === 'focusPiece') {
+        if (Number.isInteger(msg.fr) && msg.fr >= 0 && msg.fr <= 9 && Number.isInteger(msg.fc) && msg.fc >= 0 && msg.fc <= 8) {
+          E.focusPonderPiece(msg.fr, msg.fc);
+        }
       } else if (msg.type === 'stopPonder') {
         E.stopPonder(false);
       }
