@@ -467,15 +467,15 @@ function XiangqiEngineFactory() {
     }
   };
 
-  const PIECE_VAL = { K: 10000, R: 950, C: 450, N: 430, B: 210, A: 210, P: 100 };
+  const PIECE_VAL = { K: 10000, R: 980, C: 485, N: 435, B: 195, A: 195, P: 100 };
   const PST_P = [
-    [ 40,  60,  80, 110, 120, 110,  80,  60,  40],
-    [ 90, 130, 170, 230, 260, 230, 170, 130,  90],
-    [100, 140, 185, 225, 245, 225, 185, 140, 100],
-    [ 90, 120, 155, 185, 195, 185, 155, 120,  90],
-    [ 70,  90, 115, 135, 145, 135, 115,  90,  70],
-    [  0,   0,  22,   0,  28,   0,  22,   0,   0],
-    [-15,   0,   4,   0,   8,   0,   4,   0, -15],
+    [ 25,  35,  45,  60,  65,  60,  45,  35,  25],
+    [ 65,  90, 115, 150, 165, 150, 115,  90,  65],
+    [ 70,  95, 120, 145, 160, 145, 120,  95,  70],
+    [ 55,  75,  95, 115, 125, 115,  95,  75,  55],
+    [ 35,  50,  65,  80,  90,  80,  65,  50,  35],
+    [  0,   0,  18,   0,  25,   0,  18,   0,   0],
+    [-10,   0,   4,   0,   8,   0,   4,   0, -10],
     [  0,   0,   0,   0,   0,   0,   0,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0,   0],
     [  0,   0,   0,   0,   0,   0,   0,   0,   0]
@@ -561,7 +561,7 @@ function XiangqiEngineFactory() {
   // 搜尋窗口一律使用有限邊界（不可用 ±Infinity），殺棋分數約為 ±19000~19500
   const SEARCH_INF = 30000;
   const MATE_BOUND = 18000;
-  const ITER_GROWTH = 2.5;  // 預估下一層搜尋時間約為上一層的倍數
+  const ITER_GROWTH = 1.45;  // 預估下一層搜尋時間倍數（允許利用不完整層的最佳著法）
   let ttKeyLo = null, ttKeyHi = null, ttDepth = null, ttFlag = null, ttScore = null, ttBestMove = null, ttAge = null;
   let ttGen = 1;
   function ensureTT() {
@@ -615,6 +615,7 @@ function XiangqiEngineFactory() {
   let searchNodes = 0;
   let searchAborted = false;
   const pathHashLo = new Uint32Array(64);
+  const pathInChk = new Uint8Array(64);
   let gameHashSet = new Set();
 
   function encodeMove(fr, fc, tr, tc) {
@@ -636,7 +637,7 @@ function XiangqiEngineFactory() {
 
   function evaluateBoard(board, useTactics = true) {
     let score = 0;
-    let rRooks = 0, bRooks = 0, rCannons = 0, bCannons = 0;
+    let rRooks = 0, bRooks = 0, rCannons = 0, bCannons = 0, rHorses = 0, bHorses = 0;
     let rAdv = 0, bAdv = 0, rBish = 0, bBish = 0;
     let rKr = 9, rKc = 4, bKr = 0, bKc = 4;
     let rDevRooks = 0, bDevRooks = 0;
@@ -654,6 +655,7 @@ function XiangqiEngineFactory() {
             rRooks++;
             if (!(r === 9 && (c === 0 || c === 8))) rDevRooks++;
           } else if (p.t === 'N') {
+            rHorses++;
             if (!(r === 9 && (c === 1 || c === 7))) rDevHorses++;
           } else if (p.t === 'C') rCannons++;
           else if (p.t === 'A') rAdv++;
@@ -665,6 +667,7 @@ function XiangqiEngineFactory() {
             bRooks++;
             if (!(r === 0 && (c === 0 || c === 8))) bDevRooks++;
           } else if (p.t === 'N') {
+            bHorses++;
             if (!(r === 0 && (c === 1 || c === 7))) bDevHorses++;
           } else if (p.t === 'C') bCannons++;
           else if (p.t === 'A') bAdv++;
@@ -676,13 +679,27 @@ function XiangqiEngineFactory() {
 
     if (!useTactics) return score;
 
-    // 1. 仕相全與缺仕怕雙車、缺相怕炮
-    if (rAdv === 2 && rBish === 2) score += 40;
-    if (bAdv === 2 && bBish === 2) score -= 40;
-    if (rAdv < 2 && bRooks > 0) score -= (2 - rAdv) * bRooks * 105;
-    if (bAdv < 2 && rRooks > 0) score += (2 - bAdv) * rRooks * 105;
-    if (rBish < 2 && bCannons > 0) score -= (2 - rBish) * 70;
-    if (bBish < 2 && rCannons > 0) score += (2 - bBish) * 70;
+    // 1. 仕相全與缺仕怕雙車、缺相怕炮（避免單仕價值超過馬炮導致開局盲目棄炮換仕）
+    if (rAdv === 2 && rBish === 2) score += 30;
+    if (bAdv === 2 && bBish === 2) score -= 30;
+    if (rAdv === 0 && bRooks > 0) score -= bRooks * 135;
+    else if (rAdv === 1 && bRooks > 0) score -= bRooks * 35;
+    if (bAdv === 0 && rRooks > 0) score += rRooks * 135;
+    else if (bAdv === 1 && rRooks > 0) score += rRooks * 35;
+    if (rBish === 0 && bCannons > 0) score -= 110;
+    else if (rBish === 1 && bCannons > 0) score -= 35;
+    if (bBish === 0 && rCannons > 0) score += 110;
+    else if (bBish === 1 && rCannons > 0) score += 35;
+
+    // 雙車出動與馬炮協同加成（防止中開局盲目將雙炮換雙馬）
+    if (rDevRooks === 2) score += 35;
+    else if (rDevRooks === 0 && rRooks === 2) score -= 25;
+    if (bDevRooks === 2) score -= 35;
+    else if (bDevRooks === 0 && bRooks === 2) score += 25;
+    if (rCannons > 0 && rHorses > 0) score += 28;
+    if (bCannons > 0 && bHorses > 0) score -= 28;
+    if (rCannons === 0 && bBish === 2) score -= 45;
+    if (bCannons === 0 && rBish === 2) score += 45;
 
     // 2. 九宮將帥氣數（防止馬/士塞死將門遭臥槽馬或悶宮一擊必殺）
     let rLiberties = 0, bLiberties = 0;
@@ -741,10 +758,14 @@ function XiangqiEngineFactory() {
             for (let rr = r - 1; rr >= 3; rr--) if (board[rr][c]) { blocked = true; break; }
             if (!blocked) score += 42;
             if (r <= 2 && c >= 2 && c <= 6) score += 48;
+            else if (r === 3 || r === 4) score += 26;
+            if (c === 3 || c === 5) score += 20;
           } else {
             for (let rr = r + 1; rr <= 6; rr++) if (board[rr][c]) { blocked = true; break; }
             if (!blocked) score -= 42;
             if (r >= 7 && c >= 2 && c <= 6) score -= 48;
+            else if (r === 6 || r === 5) score -= 26;
+            if (c === 3 || c === 5) score -= 20;
           }
           // 車對敵帥同線絕對牽制
           if (c === oppKc) {
@@ -768,6 +789,7 @@ function XiangqiEngineFactory() {
             if (r >= 5 && bDevRooks === 0 && bRooks > 0) score += 70;
             else if (r >= 5 && bDevRooks === 1 && bRooks === 2 && (c === 0 || c === 8)) score += 45;
             if (r === 2 && c === 4 && bDevHorses < 2 && board[7][4] && board[7][4].s === 'R' && board[7][4].t === 'C') score += 40;
+            else if (r === 2 && c === 4 && bDevHorses === 0 && bRooks === 2) score += 50;
           }
           if (c === oppKc) {
             const lo = Math.min(r, oppKr), hi = Math.max(r, oppKr);
@@ -784,14 +806,24 @@ function XiangqiEngineFactory() {
             else if (between === 2) {
               score += sign * (woxinHorse ? 220 : 60);              // 鎮中牽制 / 窩心馬被栓重罰
               if ((isRed && rRooks > 0) || (!isRed && bRooks > 0)) score += sign * 45; // 鐵門栓配合威脅
+            } else if (between === 3 && c === 4) {
+              score += sign * 55;                                   // 穩守中路當頭炮鎮中價值
             }
           }
           if ((isRed && r === 0) || (!isRed && r === 9)) score += sign * 50; // 沉底炮
         } else if (p.t === 'P') {
           if ((isRed && r <= 4) || (!isRed && r >= 5)) {
-            score += sign * Math.max(0, 9 - distToKing) * 8;
+            score += sign * Math.max(0, 9 - distToKing) * 5;
             if (c < 8 && board[r][c + 1] && board[r][c + 1].s === p.s && board[r][c + 1].t === 'P') {
               score += sign * 35; // 過河連環兵
+            }
+            if ((isRed && bRooks <= 1) || (!isRed && rRooks <= 1)) {
+              if (c >= 2 && c <= 6 && distToKing <= 3 && ((isRed && r >= 1) || (!isRed && r <= 8))) {
+                score += sign * 45; // 中殘局逼近九宮高兵/低卒
+              }
+              if ((isRed && bRooks === 0) || (!isRed && rRooks === 0)) {
+                score += sign * 40; // 無車殘局過河兵價值倍增
+              }
             }
           }
         }
@@ -875,8 +907,9 @@ function XiangqiEngineFactory() {
       return 0;
     }
     const inChk = isInCheck(board, turn);
+    let standPat = -SEARCH_INF;
     if (!inChk) {
-      const standPat = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
+      standPat = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
       if (standPat >= beta) return beta;
       if (standPat > alpha) alpha = standPat;
       if (qDepth <= 0) return standPat;
@@ -893,6 +926,11 @@ function XiangqiEngineFactory() {
       const mover = board[m.fr][m.fc];
       const captured = board[m.tr][m.tc];
       if (captured && captured.t === 'K') return 19500 - ply * 10;
+
+      // Delta Pruning：非將軍狀態下，若吃子後加上裕度仍遠低於 alpha，直接略過
+      if (!inChk && captured && standPat + PIECE_VAL[captured.t] + 210 < alpha) {
+        continue;
+      }
 
       board[m.tr][m.tc] = mover;
       board[m.fr][m.fc] = null;
@@ -922,17 +960,34 @@ function XiangqiEngineFactory() {
       return 0;
     }
 
-    // 循環重複局面檢測（防止優勢時無意義來回長捉或長將）
+    const inChk = inChkKnown !== null ? inChkKnown : isInCheck(board, turn);
+    if (ply < 64) {
+      pathHashLo[ply] = hLo;
+      pathInChk[ply] = inChk ? 1 : 0;
+    }
+
+    // 循環重複局面與長將犯規檢測：
+    // - 長將犯規方判負 (-6000 / -8000)
+    // - 一般重複局面依據實際盤面靜態分加上懲罰偏移，使走成重複局面的一方 (ply - 1) 永遠比實戰分低 140~350 分
     if (ply > 0 && allowNull) {
-      if (gameHashSet.has(hLo)) return -35;
+      if (gameHashSet.has(hLo)) {
+        if (inChk) return 8000;
+        const baseEval = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
+        return baseEval + (ply === 1 ? 350 : 140);
+      }
       for (let p = ply - 2; p >= 0; p -= 2) {
-        if (pathHashLo[p] === hLo) return -35;
+        if (pathHashLo[p] === hLo) {
+          if (inChk && (ply >= 2 && pathInChk[ply - 2])) return 6000;
+          if ((ply >= 1 && pathInChk[ply - 1]) && (ply >= 3 && pathInChk[ply - 3])) return -6000;
+          if (inChk) return 6000;
+          const baseEval = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
+          return baseEval + 140;
+        }
       }
     }
-    if (ply < 64) pathHashLo[ply] = hLo;
 
-    const inChk = inChkKnown !== null ? inChkKnown : isInCheck(board, turn);
-    if (inChk && ply < 30) depth++;
+    // 將軍延伸：若同一方連續反覆將軍則僅在葉節點附近延伸，防止無意義頓挫將軍浪費深度
+    if (inChk && ply < 24 && (depth <= 4 || !(ply >= 2 && pathInChk[ply - 2]))) depth++;
 
     if (depth <= 0) {
       if (qMax > 0) return quiesce(board, alpha, beta, turn, qMax, ply, useTactics, deadline);
@@ -954,6 +1009,12 @@ function XiangqiEngineFactory() {
     }
 
     const nextTurn = turn === 'R' ? 'B' : 'R';
+
+    // Reverse Futility Pruning (靜態空著裁剪)：淺層非將軍節點若靜態評估大幅超過 beta 則直接裁剪
+    if (allowNull && !inChk && depth <= 3 && ply > 0 && beta < MATE_BOUND && beta > -MATE_BOUND) {
+      const staticEval = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
+      if (staticEval - depth * 125 >= beta) return staticEval;
+    }
 
     // Null-Move Pruning (空著裁剪)
     // beta 必須是有限的非殺棋分數：若 beta 為無限大，空著子節點的窗口 (-beta, -beta+1) 會退化成 (-∞, -∞)，
@@ -1076,6 +1137,70 @@ function XiangqiEngineFactory() {
         { f: [9, 7], t: [7, 6], c: '傌二進三出馬。' },
         { f: [3, 2], t: [4, 2], c: '卒３進１通馬路。' }
       ]
+    },
+    {
+      title: '中炮正馬對右馬進七卒',
+      moves: [
+        { f: [7, 7], t: [7, 4], c: '炮二平五立中炮。' },
+        { f: [0, 7], t: [2, 6], c: '馬８進７跳右正馬。' },
+        { f: [9, 7], t: [7, 6], c: '傌二進三跳右馬。' },
+        { f: [3, 6], t: [4, 6], c: '卒７進１挺卒制馬。' },
+        { f: [9, 8], t: [9, 7], c: '俥一平二出直車。' },
+        { f: [0, 8], t: [0, 7], c: '車９平８亮直車。' },
+        { f: [9, 7], t: [3, 7], c: '俥二進六過河車壓制。' },
+        { f: [0, 1], t: [2, 2], c: '馬２進３成屏風馬。' },
+        { f: [6, 2], t: [5, 2], c: '兵七進一活通左馬。' },
+        { f: [2, 7], t: [2, 8], c: '包８平９平邊炮兌車。' },
+        { f: [9, 1], t: [7, 2], c: '傌八進七跳左正馬。' },
+        { f: [0, 0], t: [0, 1], c: '車１平２出左直車。' }
+      ]
+    },
+    {
+      title: '中炮雙正馬對屏風馬出直車',
+      moves: [
+        { f: [7, 7], t: [7, 4], c: '炮二平五立中炮。' },
+        { f: [0, 7], t: [2, 6], c: '馬８進７跳正馬。' },
+        { f: [9, 7], t: [7, 6], c: '傌二進三跳右馬。' },
+        { f: [3, 6], t: [4, 6], c: '卒７進１挺卒制馬。' },
+        { f: [9, 8], t: [9, 7], c: '俥一平二亮直車。' },
+        { f: [0, 8], t: [0, 7], c: '車９平８出直車。' },
+        { f: [9, 1], t: [7, 2], c: '傌八進七雙正馬齊出。' },
+        { f: [0, 1], t: [2, 2], c: '馬２進３成屏風馬。' },
+        { f: [6, 2], t: [5, 2], c: '兵七進一活通馬路。' },
+        { f: [2, 7], t: [2, 8], c: '包８平９平邊炮兌車。' },
+        { f: [9, 7], t: [3, 7], c: '俥二進六過河壓制。' },
+        { f: [0, 0], t: [0, 1], c: '車１平２雙車盡出。' }
+      ]
+    },
+    {
+      title: '反宮馬應七路兵',
+      moves: [
+        { f: [7, 7], t: [7, 4], c: '炮二平五立中炮。' },
+        { f: [0, 1], t: [2, 2], c: '馬２進３跳正馬。' },
+        { f: [9, 7], t: [7, 6], c: '傌二進三跳右馬。' },
+        { f: [2, 7], t: [2, 5], c: '包８平６架士角炮。' },
+        { f: [6, 6], t: [5, 6], c: '兵三進一挺兵制馬。' },
+        { f: [0, 7], t: [2, 6], c: '馬８進７成反宮馬。' },
+        { f: [9, 8], t: [9, 7], c: '俥一平二亮直車。' },
+        { f: [3, 2], t: [4, 2], c: '卒３進１挺卒活馬。' },
+        { f: [9, 1], t: [7, 2], c: '傌八進七出左馬。' },
+        { f: [0, 8], t: [0, 7], c: '車９平８亮直車。' }
+      ]
+    },
+    {
+      title: '仕角炮對屏風馬',
+      moves: [
+        { f: [7, 7], t: [7, 5], c: '炮二平四架仕角炮。' },
+        { f: [0, 7], t: [2, 6], c: '馬８進７跳正馬。' },
+        { f: [9, 7], t: [7, 6], c: '傌二進三跳正馬。' },
+        { f: [3, 6], t: [4, 6], c: '卒７進１挺卒制馬。' },
+        { f: [9, 8], t: [9, 7], c: '俥一平二出直車。' },
+        { f: [0, 8], t: [0, 7], c: '車９平８亮直車。' },
+        { f: [9, 1], t: [7, 2], c: '傌八進七跳左馬。' },
+        { f: [0, 1], t: [2, 2], c: '馬２進３成屏風馬。' },
+        { f: [6, 2], t: [5, 2], c: '兵七進一挺七路兵。' },
+        { f: [0, 0], t: [1, 0], c: '車１進１起橫車。' }
+      ]
     }
   ];
 
@@ -1126,13 +1251,18 @@ function XiangqiEngineFactory() {
     return b.map(row => row.map(p => (p ? { s: p.s, t: p.t } : null)));
   }
 
-  function findOpeningBookMove(board, side) {
+  function findOpeningBookMove(board, side, level = 4) {
     if (ctxStep >= 14) return null;
     const candidates = [];
-    const allBooks = [...Object.values(PRESETS), ...EXTRA_BOOK_LINES];
+    // 排除古譜中故意示範劣著被殺的一方（如黑方走鐵滑車/順炮棄馬局，或紅方走梅花譜貪進中炮）
+    const soundPresetKeys = side === 'R'
+      ? (level >= 4 ? ['pingfengma', 'yangguanlin'] : ['pingfengma', 'fangongma', 'huronghua', 'yangguanlin', 'xianren', 'tiehuache', 'juzhongmi1', 'shunpao_heng'])
+      : (level >= 4 ? ['pingfengma', 'yangguanlin'] : ['pingfengma', 'fangongma', 'huronghua', 'yangguanlin', 'xianren', 'meihuapu']);
+    const allBooks = [...soundPresetKeys.map(k => PRESETS[k]).filter(Boolean), ...EXTRA_BOOK_LINES];
+    const mirrors = ctxStep === 0 ? [false] : [false, true];
     for (const preset of allBooks) {
       if (preset.moves.length <= ctxStep) continue;
-      for (const mirror of [false, true]) {
+      for (const mirror of mirrors) {
         let match = true;
         for (let i = 0; i < ctxStep; i++) {
           const hm = ctxMoves[i];
@@ -1563,7 +1693,7 @@ function XiangqiEngineFactory() {
   function computeBestMove(board, side, level) {
     const prof = AI_PROFILES[level] || AI_PROFILES[4];
     if (level >= 1) {
-      const bookMove = findOpeningBookMove(board, side);
+      const bookMove = findOpeningBookMove(board, side, level);
       if (bookMove) return bookMove;
     }
 
