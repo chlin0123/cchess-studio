@@ -968,12 +968,15 @@ function XiangqiEngineFactory() {
 
     // 循環重複局面與長將犯規檢測：
     // - 長將犯規方判負 (-6000 / -8000)
-    // - 一般重複局面依據實際盤面靜態分加上懲罰偏移，使走成重複局面的一方 (ply - 1) 永遠比實戰分低 140~350 分
+    // - 一般非將軍重複局面：baseEval 為當前行棋方 (ply) 靜態分，-baseEval 為剛走出重複步那一方 (ply - 1) 的靜態分。
+    //   若重複方處於明顯優勢 (-baseEval > 50，即 baseEval < -50)，扣減 140~350 分（且不低於 +35）迫使其積極求勝；
+    //   若重複方處於均勢或劣勢 (-baseEval <= 50，即 baseEval >= -50)，回傳 +35（重複方得 -35 接近和棋），使其在劣勢時懂得守和。
     if (ply > 0 && allowNull) {
       if (gameHashSet.has(hLo)) {
-        if (inChk) return 8000;
+        if (inChk) return ply === 1 ? 19050 : 8000;
         const baseEval = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
-        return baseEval + (ply === 1 ? 350 : 140);
+        if (baseEval >= -50) return 35;
+        return Math.max(35, baseEval + (ply === 1 ? 350 : 140));
       }
       for (let p = ply - 2; p >= 0; p -= 2) {
         if (pathHashLo[p] === hLo) {
@@ -981,7 +984,8 @@ function XiangqiEngineFactory() {
           if ((ply >= 1 && pathInChk[ply - 1]) && (ply >= 3 && pathInChk[ply - 3])) return -6000;
           if (inChk) return 6000;
           const baseEval = evaluateBoard(board, useTactics) * (turn === 'R' ? 1 : -1);
-          return baseEval + 140;
+          if (baseEval >= -50) return 35;
+          return Math.max(35, baseEval + 140);
         }
       }
     }
@@ -1257,8 +1261,11 @@ function XiangqiEngineFactory() {
     // 排除古譜中故意示範劣著被殺的一方（如黑方走鐵滑車/順炮棄馬局，或紅方走梅花譜貪進中炮）
     const soundPresetKeys = side === 'R'
       ? (level >= 4 ? ['pingfengma', 'yangguanlin'] : ['pingfengma', 'fangongma', 'huronghua', 'yangguanlin', 'xianren', 'tiehuache', 'juzhongmi1', 'shunpao_heng'])
-      : (level >= 4 ? ['pingfengma', 'yangguanlin'] : ['pingfengma', 'fangongma', 'huronghua', 'yangguanlin', 'xianren', 'meihuapu']);
-    const allBooks = [...soundPresetKeys.map(k => PRESETS[k]).filter(Boolean), ...EXTRA_BOOK_LINES];
+      : (level >= 4 ? ['pingfengma', 'fangongma', 'yangguanlin'] : ['pingfengma', 'fangongma', 'huronghua', 'yangguanlin', 'xianren', 'meihuapu']);
+    const extraBooks = (level >= 4 && side === 'R')
+      ? EXTRA_BOOK_LINES.filter(b => b.title !== '仕角炮對屏風馬' && b.title !== '中炮雙正馬對屏風馬出直車')
+      : EXTRA_BOOK_LINES;
+    const allBooks = [...soundPresetKeys.map(k => PRESETS[k]).filter(Boolean), ...extraBooks];
     const mirrors = ctxStep === 0 ? [false] : [false, true];
     for (const preset of allBooks) {
       if (preset.moves.length <= ctxStep) continue;
