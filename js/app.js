@@ -999,19 +999,108 @@ function copyIO() {
     document.execCommand('copy');
   }
 }
+const MOVE_CHAR_MAP = {
+  '帥': 'K', '將': 'K', '仕': 'A', '士': 'A', '相': 'B', '象': 'B',
+  '傌': 'N', '馬': 'N', '俥': 'R', '車': 'R', '炮': 'C', '包': 'C', '兵': 'P', '卒': 'P',
+  '一': '1', '二': '2', '三': '3', '四': '4', '五': '5', '六': '6', '七': '7', '八': '8', '九': '9',
+  '１': '1', '２': '2', '３': '3', '４': '4', '５': '5', '６': '6', '７': '7', '８': '8', '９': '9'
+};
+
+function normalizeMoveToken(tok) {
+  let out = '';
+  for (let i = 0; i < tok.length; i++) {
+    const ch = tok[i];
+    out += MOVE_CHAR_MAP[ch] || ch;
+  }
+  return out;
+}
+
+function parseTextNotationToSteps(rawText) {
+  const cleaned = String(rawText || '')
+    .replace(/（[^）]*）|\([^)]*\)/g, ' ')
+    .replace(/\b\d+\s*\./g, ' ');
+  const tokenRegex = /[帥將仕士相象傌馬俥車炮包兵卒前中後][一二三四五六七八九１２３４５６７８９1-9帥將仕士相象傌馬俥車炮包兵卒][進退平][一二三四五六七八九１２３４５６７８９1-9]/g;
+  const tokens = cleaned.match(tokenRegex);
+  if (!tokens || tokens.length === 0) {
+    return { ok: false, error: '棋譜格式錯誤：請貼上完整的中文文字棋譜（如：炮二平五 馬８進７ ...）或 JSON 棋譜！' };
+  }
+  if (tokens.length > MAX_STEPS) {
+    return { ok: false, error: `棋譜步數超過上限（最多 ${MAX_STEPS} 步），已中止載入！` };
+  }
+
+  const simBoard = initBoard();
+  let simTurn = 'R';
+  const steps = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const targetNorm = normalizeMoveToken(tokens[i]);
+    let matched = null;
+    for (let r = 0; r < 10 && !matched; r++) {
+      for (let c = 0; c < 9 && !matched; c++) {
+        const p = simBoard[r][c];
+        if (!p || p.s !== simTurn) continue;
+        const legals = getLegalMoves(simBoard, r, c);
+        for (let k = 0; k < legals.length; k++) {
+          const [tr, tc] = legals[k];
+          const notat = getNotation(simBoard, r, c, tr, tc);
+          if (normalizeMoveToken(notat) === targetNorm) {
+            matched = { fr: r, fc: c, tr, tc };
+            break;
+          }
+        }
+      }
+    }
+    if (!matched) {
+      const sideName = simTurn === 'R' ? '紅方' : '黑方';
+      return {
+        ok: false,
+        error: `文字棋譜解析失敗：第 ${i + 1} 步（${sideName}「${tokens[i]}」）無對應合法著法！`
+      };
+    }
+    steps.push({ f: [matched.fr, matched.fc], t: [matched.tr, matched.tc], c: '' });
+    simBoard[matched.tr][matched.tc] = simBoard[matched.fr][matched.fc];
+    simBoard[matched.fr][matched.fc] = null;
+    simTurn = simTurn === 'R' ? 'B' : 'R';
+  }
+
+  return { ok: true, title: `文字棋譜 (${steps.length}步)`, steps };
+}
+
 function importJSON() {
-  let data;
-  try {
-    data = JSON.parse(document.getElementById('ioTextarea').value);
-  } catch (err) {
-    alert('棋譜 JSON 格式錯誤，請確認貼上的內容是否完整！');
+  const raw = document.getElementById('ioTextarea').value.trim();
+  if (!raw) {
+    alert('請先貼上要載入的文字棋譜或 JSON 內容！');
     return;
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    alert('棋譜 JSON 結構不正確！');
+
+  // 1. 優先嘗試解析為標準 JSON 棋譜物件
+  if (raw.startsWith('{')) {
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      alert('棋譜 JSON 格式錯誤，請確認貼上的內容是否完整！');
+      return;
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      alert('棋譜 JSON 結構不正確！');
+      return;
+    }
+    if (loadAndVerifySteps(data.title || '', data.steps || [])) {
+      goStep(0);
+      closeModal();
+    }
     return;
   }
-  if (loadAndVerifySteps(data.title || '', data.steps || [])) {
+
+  // 2. 支援直接貼上中文文字棋譜（含 Google Docs 連續棋譜、分回合編號棋譜、半形/全形數字或外框括號）
+  const parsed = parseTextNotationToSteps(raw);
+  if (!parsed.ok) {
+    alert(parsed.error);
+    return;
+  }
+  if (loadAndVerifySteps(parsed.title, parsed.steps)) {
+    goStep(0);
     closeModal();
   }
 }
